@@ -4769,6 +4769,11 @@ namespace smt {
             }
             mdl = m_model.get();
         }
+        if (m_fmls && mdl) {
+            auto convert = m_fmls->model_trail().get_model_converter();
+            if (convert) 
+                (*convert)(mdl);            
+        }
     }
 
     void context::get_levels(ptr_vector<expr> const& vars, unsigned_vector& depth) {
@@ -4785,6 +4790,9 @@ namespace smt {
         expr_ref_vector result(get_manager());
         for (literal lit : m_assigned_literals) {
             if (get_assign_level(lit) > max_level + m_base_lvl)
+                continue;
+            bool_var_data const& d = get_bdata(lit.var());
+            if (d.is_theory_atom() && !m_theories.get_plugin(d.get_theory())->is_safe_to_copy(lit.var())) 
                 continue;
             expr_ref e(m);
             literal2expr(lit, e);

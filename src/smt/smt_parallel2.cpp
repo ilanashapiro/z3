@@ -17,18 +17,37 @@ Author:
 
 
 
+
 #include "util/scoped_ptr_vector.h"
 #include "ast/ast_util.h"
 #include "ast/ast_pp.h"
 #include "ast/ast_ll_pp.h"
 #include "ast/ast_translation.h"
+#include "ast/simplifiers/then_simplifier.h"
 #include "smt/smt_parallel2.h"
 #include "smt/smt_lookahead.h"
 #include "params/smt_parallel_params.hpp"
+#include "solver/solver_preprocess.h"
 
 #include <cmath>
 #include <condition_variable>
 #include <mutex>
+
+class bounded_pp_exprs {
+    expr_ref_vector const& es;
+public:
+    bounded_pp_exprs(expr_ref_vector const& es): es(es) {}
+
+    std::ostream& display(std::ostream& out) const {
+        for (auto e : es) 
+            out << mk_bounded_pp(e, es.get_manager()) << "\n";
+        return out;
+    }
+};
+
+inline std::ostream& operator<<(std::ostream& out, bounded_pp_exprs const& pp) {
+    return pp.display(out);
+}
 
 #ifdef SINGLE_THREAD
 
@@ -45,6 +64,7 @@ namespace smt {
 #include <mutex>
 #include <condition_variable>
 
+#define SHARE_SEARCH_TREE 1
 
 #define LOG_WORKER(lvl, s) IF_VERBOSE(lvl, verbose_stream() << "Worker " << id << s)
 
@@ -56,12 +76,18 @@ namespace smt {
         search_tree::node<cube_config>* node = nullptr;
         expr_ref_vector cube(m);
         while (true) { 
-            collect_shared_clauses(m_g2l);
 
+
+#if SHARE_SEARCH_TREE
             if (!b.get_cube(m_g2l, id, cube, node)) {
                 LOG_WORKER(1, " no more cubes\n");
                 return;
             }
+#else
+            if (!get_cube(cube, node))
+                return;
+#endif
+            collect_shared_clauses(m_g2l);
 
         check_cube_start:
             LOG_WORKER(1, " CUBE SIZE IN MAIN LOOP: " << cube.size() << "\n");
@@ -74,14 +100,23 @@ namespace smt {
             
             switch (r) {
                 case l_undef: {
+                    update_max_thread_conflicts();
                     LOG_WORKER(1, " found undef cube\n");
                     // return unprocessed cubes to the batch manager
                     // add a split literal to the batch manager.
                     // optionally process other cubes and delay sending back unprocessed cubes to batch manager.
+                    if (m_config.m_max_cube_depth <= cube.size()) 
+                        goto check_cube_start;
+
                     auto atom = get_split_atom();
                     if (!atom)
                         goto check_cube_start;
+#if SHARE_SEARCH_TREE
                     b.split(m_l2g, id, node, atom);
+#else
+                    split(node, atom);
+#endif
+                    simplify();
                     break;
                 }
                 case l_true: {
@@ -105,8 +140,12 @@ namespace smt {
                         if (asms.contains(e))
                             b.report_assumption_used(m_l2g, e); // report assumptions used in unsat core, so they can be used in final core
 
-                    LOG_WORKER(1, " found unsat cube\n");                    
+                    LOG_WORKER(1, " found unsat cube\n");    
+#if SHARE_SEARCH_TREE
                     b.backtrack(m_l2g, unsat_core, node);
+#else
+                    backtrack(unsat_core, node);
+#endif
                     break;
                 }
             }    
@@ -115,10 +154,43 @@ namespace smt {
         }
     }
 
+    bool parallel2::worker::get_cube(expr_ref_vector& cube, node*& n) {
+        node* t = m_search_tree.activate_node(n);
+        cube.reset();
+        if (!t) {
+            b.set_unsat(m_l2g, cube);
+            return false;
+        }
+        n = t;
+        while (t) {
+            if (cube_config::literal_is_null(t->get_literal()))
+                break;
+            cube.push_back(t->get_literal());
+            t = t->parent();
+        }
+        return true;
+    }
+
+    void parallel2::worker::backtrack(expr_ref_vector const& core, node* n) {
+        vector<expr_ref> core_copy;
+        for (auto c : core)
+            core_copy.push_back(expr_ref(c, m));
+        m_search_tree.backtrack(n, core_copy);
+        //LOG_WORKER(1, m_search_tree.display(verbose_stream() << bounded_pp_exprs(core) << "\n"););
+    }
+
+    void parallel2::worker::split(node* n, expr* atom) {
+        expr_ref lit(atom, m), nlit(m);
+        nlit = mk_not(m, lit);
+        IF_VERBOSE(1, verbose_stream() << "Batch manager splitting on literal: " << mk_bounded_pp(lit, m, 3) << "\n");
+        m_search_tree.split(n, lit, nlit);
+    }
+
     parallel2::worker::worker(unsigned id, parallel2& p, expr_ref_vector const& _asms): 
         id(id), p(p), b(p.m_batch_manager), m_smt_params(p.ctx.get_fparams()), asms(m),
         m_g2l(p.ctx.m, m),
-        m_l2g(m, p.ctx.m) {
+        m_l2g(m, p.ctx.m),
+        m_search_tree(expr_ref(m)) {
         for (auto e : _asms) 
             asms.push_back(m_g2l(e));
         LOG_WORKER(1, " created with " << asms.size() << " assumptions\n");        
@@ -126,7 +198,7 @@ namespace smt {
         ctx = alloc(context, m, m_smt_params, p.ctx.get_params());
         context::copy(p.ctx, *ctx, true);
         ctx->set_random_seed(id + m_smt_params.m_random_seed);
-
+        
         smt_parallel_params pp(p.ctx.m_params);
         m_config.m_threads_max_conflicts = ctx->get_fparams().m_threads_max_conflicts;
         m_config.m_max_conflicts = ctx->get_fparams().m_max_conflicts;
@@ -144,6 +216,9 @@ namespace smt {
         m_config.m_beam_search = pp.beam_search();
         m_config.m_explicit_hardness = pp.explicit_hardness();
         m_config.m_cubetree = pp.cubetree();
+        m_config.m_max_cube_depth = pp.max_cube_depth();
+        m_config.m_inprocessing = pp.inprocessing();
+        m_config.m_inprocessing_delay = pp.inprocessing_delay();
 
         // don't share initial units
         ctx->pop_to_base_lvl();
@@ -169,13 +244,82 @@ namespace smt {
             expr_ref e(ctx->bool_var2expr(lit.var()), ctx->m); // turn literal into a Boolean expression
             if (m.is_and(e) || m.is_or(e))             
                 continue;
-            
 
-            if (lit.sign()) 
+            if (lit.sign())
                 e = m.mk_not(e); // negate if literal is negative
             b.collect_clause(l2g, id, e);
         }
         m_num_shared_units = sz;
+    }
+
+
+
+    void parallel2::worker::simplify() {
+        if (!m.inc())
+            return;
+        // first attempt: one-shot simplification of the context.
+        // a precise schedule of repeated simplification is TBD.
+        // also, the in-processing simplifier should be applied to
+        // a current set of irredundant clauses that may be reduced by
+        // unit propagation. By including the units we are effectively 
+        // repeating unit propagation, but potentially not subsumption or 
+        // Boolean simplifications that a solver could perform (smt_context doesnt really)
+        // Integration of inprocssing simplifcation here or in sat/smt solver could
+        // be based on taking the current clause set instead of the asserted formulas.
+        if (!m_config.m_inprocessing)
+            return;
+        if (m_config.m_inprocessing_delay > 0) {
+            --m_config.m_inprocessing_delay;
+            return;
+        }            
+        m_config.m_inprocessing = false; // initial strategy is to immediately disable inprocessing for future calls.
+        dependent_expr_simplifier* s = ctx->m_simplifier.get();
+        if (!s) {
+            // create a simplifier if none exists
+            // initialize it to a default pre-processing simplifier.
+            ctx->m_fmls = alloc(base_dependent_expr_state, m);
+            auto then_s = alloc(then_simplifier, m, ctx->get_params(), *ctx->m_fmls);
+            s = then_s;
+            ctx->m_simplifier = s;
+            init_preprocess(m, ctx->get_params(), *then_s, *ctx->m_fmls);
+        }
+        
+
+        dependent_expr_state& fmls = *ctx->m_fmls.get();
+        // extract assertions from ctx.
+        // it is possible to track proof objects here if wanted.
+        // feed them to the simplifier
+        ptr_vector<expr> assertions;
+        expr_ref_vector units(m);
+        ctx->get_assertions(assertions);
+        ctx->get_units(units);
+        for (expr* e : assertions) 
+            fmls.add(dependent_expr(m, e, nullptr, nullptr));
+        for (expr* e : units) 
+            fmls.add(dependent_expr(m, e, nullptr, nullptr));
+
+        // run in-processing on the assertions
+        s->reduce();
+        
+        scoped_ptr<context> new_ctx = alloc(context, m, m_smt_params, p.ctx.get_params());
+        // extract simplified assertions from the simplifier
+        // create a new context with the simplified assertions
+        // update ctx with the new context.
+        for (unsigned i = 0; i < fmls.qtail(); ++i) {
+            auto const& de = fmls[i];
+            new_ctx->assert_expr(de.fml());
+        }
+        ctx = new_ctx.detach();
+
+        ctx->internalize_assertions();
+
+        auto old_atoms = m_num_initial_atoms;
+        m_num_shared_units = ctx->assigned_literals().size();
+        m_num_initial_atoms = ctx->get_num_bool_vars();
+
+
+        LOG_WORKER(1, " inprocess " << old_atoms << " -> " << m_num_initial_atoms << "\n");
+        // TODO: copy user-propagators similar to context::copy.
     }
 
     void parallel2::worker::collect_statistics(::statistics& st) const {
@@ -202,7 +346,7 @@ namespace smt {
         }
         m_search_tree.backtrack(node, g_core);
 
-        IF_VERBOSE(1, m_search_tree.display(verbose_stream() << core << "\n"););
+        IF_VERBOSE(1, m_search_tree.display(verbose_stream() << bounded_pp_exprs(core) << "\n"););
         if (m_search_tree.is_closed()) {
             m_state = state::is_unsat;
             cancel_workers();
@@ -263,7 +407,8 @@ namespace smt {
             asms.push_back(atom);                
         lbool r = l_undef;
 
-        ctx->get_fparams().m_max_conflicts = std::min((cube.size() + 1) *m_config.m_threads_max_conflicts, m_config.m_max_conflicts);
+        ctx->get_fparams().m_max_conflicts = std::min(m_config.m_threads_max_conflicts, m_config.m_max_conflicts);
+        IF_VERBOSE(1, verbose_stream() << " Checking cube\n" << bounded_pp_exprs(cube) << "with max_conflicts: " << ctx->get_fparams().m_max_conflicts << "\n";);
         try {
             r = ctx->check(asms.size(), asms.data());
         }
@@ -285,7 +430,7 @@ namespace smt {
         expr_ref result(m);
         double score = 0;
         unsigned n = 0;
-
+        ctx->pop_to_search_lvl();
         for (bool_var v = 0; v < ctx->get_num_bool_vars(); ++v) {
             if (ctx->get_assignment(v) != l_undef)
                 continue;

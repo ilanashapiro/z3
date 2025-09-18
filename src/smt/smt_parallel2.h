@@ -65,6 +65,7 @@ namespace smt {
                 unsigned m_num_cubes = 0;
             };
 
+
             ast_manager& m;
             parallel2& p;
             std::mutex mux;
@@ -129,12 +130,17 @@ namespace smt {
                 bool m_cube_initial_only = false;
                 unsigned m_max_greedy_cubes = 1000;
                 unsigned m_num_split_lits = 2;
+                unsigned m_max_cube_depth = 20;
                 bool m_backbone_detection = false;
                 bool m_iterative_deepening = false;
                 bool m_beam_search = false;
                 bool m_explicit_hardness = false;
                 bool m_cubetree = false;
+                bool m_inprocessing = false;
+                unsigned m_inprocessing_delay = 0;
             };
+
+            using node = search_tree::node<cube_config>;
 
             unsigned id; // unique identifier for the worker
             parallel2& p;
@@ -146,6 +152,7 @@ namespace smt {
             random_gen m_rand;
             scoped_ptr<context> ctx;
             ast_translation m_g2l, m_l2g;
+            search_tree::tree<cube_config> m_search_tree;
 
             unsigned m_num_shared_units = 0;
             unsigned m_num_initial_atoms = 0;
@@ -155,6 +162,16 @@ namespace smt {
 
             lbool check_cube(expr_ref_vector const& cube);
             void share_units(ast_translation& l2g);
+
+            void update_max_thread_conflicts() {
+                m_config.m_threads_max_conflicts = (unsigned)(m_config.m_max_conflict_mul * m_config.m_threads_max_conflicts);
+            } // allow for backoff scheme of conflicts within the thread for cube timeouts.
+
+            bool get_cube(expr_ref_vector& cube, node*& n);
+            void backtrack(expr_ref_vector const& core, node* n);
+            void split(node* n, expr* atom);
+
+            void simplify();
 
         public:
             worker(unsigned id, parallel2& p, expr_ref_vector const& _asms);

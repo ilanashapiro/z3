@@ -401,6 +401,7 @@ namespace smt {
         lbool r = l_undef;
 
         ctx->get_fparams().m_max_conflicts = std::min(m_config.m_threads_max_conflicts, m_config.m_max_conflicts);
+        IF_VERBOSE(1, verbose_stream() << " Checking cube " << cube << " with max_conflicts: " << ctx->get_fparams().m_max_conflicts << "\n";);
         try {
             r = ctx->check(asms.size(), asms.data());
         }
@@ -496,7 +497,7 @@ namespace smt {
             auto& cube = m_cubes.back();
             // print out the cubes in m_cubes
             for (auto& e : m_cubes) {
-                IF_VERBOSE(1, verbose_stream() << "Cube: " << e << "\n");
+                IF_VERBOSE(4, verbose_stream() << "Cube: " << e << "\n");
             }
 
             expr_ref_vector l_cube(g2l.to());
@@ -989,6 +990,8 @@ namespace smt {
 
         // auto candidates = ctx->m_pq_scores.get_heap();
         std::vector<std::pair<double, expr*>> top_k; // will hold at most k elements
+
+        ctx->pop_to_search_lvl();
 
         for (bool_var v = 0; v < ctx->get_num_bool_vars(); ++v) {
             if (ctx->get_assignment(v) != l_undef)
