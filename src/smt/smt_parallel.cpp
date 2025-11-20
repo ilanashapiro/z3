@@ -144,6 +144,7 @@ namespace smt {
 
     void parallel::worker::share_units() {
         // Collect new units learned locally by this worker and send to batch manager
+        
         ctx->pop_to_base_lvl();
         unsigned sz = ctx->assigned_literals().size();
         for (unsigned j = m_num_shared_units; j < sz; ++j) {  // iterate only over new literals since last sync
@@ -152,7 +153,7 @@ namespace smt {
                 continue;
 
             if (m_config.m_share_units_initial_only && lit.var() >= m_num_initial_atoms) {
-                LOG_WORKER(2, " Skipping non-initial unit: " << lit.var() << "\n");
+                LOG_WORKER(4, " Skipping non-initial unit: " << lit.var() << "\n");
                 continue;  // skip non-iniial atoms if configured to do so
             }
 
@@ -280,6 +281,8 @@ namespace smt {
         // node->get_status() == status::active
         // and depth is 'high' enough
         // then ignore split, and instead set the status of node to open.
+        ++m_stats.m_num_cubes;
+        m_stats.m_max_cube_depth = std::max(m_stats.m_max_cube_depth, node->depth() + 1);
         m_search_tree.split(node, lit, nlit);
     }
 
@@ -298,7 +301,7 @@ namespace smt {
         // iterate over new clauses and assert them in the local context
         for (expr *e : new_clauses) {
             ctx->assert_expr(e);
-            LOG_WORKER(2, " asserting shared clause: " << mk_bounded_pp(e, m, 3) << "\n");
+            LOG_WORKER(4, " asserting shared clause: " << mk_bounded_pp(e, m, 3) << "\n");
         }
     }
 

@@ -306,6 +306,7 @@ namespace nlsat {
             m_explain.set_simplify_cores(m_simplify_cores);
             m_explain.set_minimize_cores(min_cores);
             m_explain.set_factor(p.factor());
+            m_explain.set_add_all_coeffs(p.add_all_coeffs());
             m_am.updt_params(p.p);
         }
 
@@ -1115,7 +1116,7 @@ namespace nlsat {
 
         void log_lemma(std::ostream& out, unsigned n, literal const* cls, bool is_valid) {
             ++m_lemma_count;
-            out << "(set-logic NRA)\n";
+            out << "(set-logic ALL)\n";
             if (is_valid) {
                 display_smt2_bool_decls(out);
                 display_smt2_arith_decls(out);
