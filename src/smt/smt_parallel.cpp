@@ -248,19 +248,11 @@ namespace smt {
         m.limit().cancel();
     }
 
-    void parallel::batch_manager::backtrack(ast_translation &l2g,
+    void batch_manager::backtrack(ast_translation &l2g,
                               expr_ref_vector const &core,
-                              search_tree::node<cube_config>* node)
-    {
-        // ---- 1. OUTSIDE LOCK: translate to expr* only (safe & fast) ----
-        vector<expr*> raw_core;
-        raw_core.reserve(core.size());      // this is OK: vector<expr*>
-        for (expr* c : core)
-            raw_core.push_back(l2g(c));     // no obj_ref constructed yet
-
+                              search_tree::node<cube_config>* node) {
         bool became_unsat = false;
 
-        // ---- 2. LOCK ONLY for tree mutation / shared state ----
         {
             std::scoped_lock lock(mux);
 
@@ -269,12 +261,16 @@ namespace smt {
             if (m_state != state::is_running)
                 return;
 
-            // Build g_core INSIDE lock, but DO NOT reserve()
-            vector<cube_config::literal> g_core;   // vector<obj_ref<expr>>
-            for (expr* ge : raw_core)
-                g_core.push_back(expr_ref(ge, m));  // construct obj_ref one by one
+            // Build g_core UNDER lock (uses l2g & shared manager m)
+            vector<cube_config::literal> g_core;
+            for (expr* c : core)
+                g_core.push_back(expr_ref(l2g(c), m));
 
             m_search_tree.backtrack(node, g_core);
+
+            IF_VERBOSE(1,
+                m_search_tree.display(verbose_stream() << bounded_pp_exprs(core) << "\n");
+            );
 
             if (m_search_tree.is_closed()) {
                 m_state = state::is_unsat;
@@ -282,49 +278,39 @@ namespace smt {
             }
         }
 
-        // ---- 3. OUTSIDE LOCK: expensive printing and cancellation ----
-        IF_VERBOSE(1,
-            m_search_tree.display(verbose_stream() << bounded_pp_exprs(core) << "\n");
-        );
-
         if (became_unsat)
             cancel_workers();
     }
 
     void parallel::batch_manager::split(ast_translation &l2g, unsigned source_worker_id,
                                         search_tree::node<cube_config> *node, expr *atom) {
+        std::scoped_lock lock(mux);
         expr_ref lit(m), nlit(m);
         lit = l2g(atom);
         nlit = mk_not(m, lit);
         IF_VERBOSE(1, verbose_stream() << "Batch manager splitting on literal: " << mk_bounded_pp(lit, m, 3) << "\n");
         
-        {
-            std::scoped_lock lock(mux);
-            if (m_state != state::is_running)
-                return;
-            // optional heuristic:
-            // node->get_status() == status::active
-            // and depth is 'high' enough
-            // then ignore split, and instead set the status of node to open.
-            ++m_stats.m_num_cubes;
-            m_stats.m_max_cube_depth = std::max(m_stats.m_max_cube_depth, node->depth() + 1);
-            m_search_tree.split(node, lit, nlit);
-        }
+        if (m_state != state::is_running)
+            return;
+        // optional heuristic:
+        // node->get_status() == status::active
+        // and depth is 'high' enough
+        // then ignore split, and instead set the status of node to open.
+        ++m_stats.m_num_cubes;
+        m_stats.m_max_cube_depth = std::max(m_stats.m_max_cube_depth, node->depth() + 1);
+        m_search_tree.split(node, lit, nlit);
     }
 
     void parallel::batch_manager::collect_clause(ast_translation &l2g,
                                    unsigned source_worker_id,
                                    expr *clause) {
+        std::scoped_lock lock(mux);
         expr *g_clause = l2g(clause);
         shared_clause sc{source_worker_id, expr_ref(g_clause, m)};
 
-        {
-            std::scoped_lock lock(mux);
-
-            if (!shared_clause_set.contains(g_clause)) {
-                shared_clause_set.insert(g_clause);
-                shared_clause_trail.push_back(std::move(sc));
-            }
+        if (!shared_clause_set.contains(g_clause)) {
+            shared_clause_set.insert(g_clause);
+            shared_clause_trail.push_back(std::move(sc));
         }
     }
 
@@ -337,31 +323,21 @@ namespace smt {
         }
     }
 
-    expr_ref_vector parallel::batch_manager::return_shared_clauses(ast_translation &g2l,
+    expr_ref_vector batch_manager::return_shared_clauses(ast_translation &g2l,
                                                      unsigned &worker_limit,
                                                      unsigned worker_id) {
-        vector<expr*> pending_clauses;
-        unsigned start, end;
+        std::scoped_lock lock(mux);
+        expr_ref_vector result(g2l.to());
 
-        {
-            std::scoped_lock lock(mux);
+        unsigned start = worker_limit;
+        unsigned end   = shared_clause_trail.size();
 
-            start = worker_limit;
-            end   = shared_clause_trail.size();
-
-            for (unsigned i = start; i < end; ++i) {
-                if (shared_clause_trail[i].source_worker_id != worker_id)
-                    pending_clauses.push_back(shared_clause_trail[i].clause.get());
-            }
-
-            worker_limit = end;
+        for (unsigned i = start; i < end; ++i) {
+            if (shared_clause_trail[i].source_worker_id != worker_id)
+                result.push_back(g2l(shared_clause_trail[i].clause.get()));
         }
 
-        // Translate outside lock (expensive)
-        expr_ref_vector result(g2l.to());
-        for (expr* gc : pending_clauses)
-            result.push_back(g2l(gc));
-
+        worker_limit = end;
         return result;
     }
 
