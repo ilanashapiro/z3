@@ -25,6 +25,7 @@ Author:
 #include "smt/smt_parallel.h"
 #include "smt/smt_lookahead.h"
 #include "solver/solver_preprocess.h"
+#include "params/smt_parallel_params.hpp"
 
 #include <cmath>
 #include <mutex>
@@ -140,6 +141,9 @@ namespace smt {
         ctx->pop_to_base_lvl();
         m_num_shared_units = ctx->assigned_literals().size();
         m_num_initial_atoms = ctx->get_num_bool_vars();
+        
+        smt_parallel_params pp(p.ctx.m_params);
+        m_config.m_share_units = pp.share_units();
     }
 
     void parallel::worker::share_units() {
@@ -248,7 +252,7 @@ namespace smt {
         m.limit().cancel();
     }
 
-    void batch_manager::backtrack(ast_translation &l2g,
+    void parallel::batch_manager::backtrack(ast_translation &l2g,
                               expr_ref_vector const &core,
                               search_tree::node<cube_config>* node) {
         bool became_unsat = false;
@@ -323,7 +327,7 @@ namespace smt {
         }
     }
 
-    expr_ref_vector batch_manager::return_shared_clauses(ast_translation &g2l,
+    expr_ref_vector parallel::batch_manager::return_shared_clauses(ast_translation &g2l,
                                                      unsigned &worker_limit,
                                                      unsigned worker_id) {
         std::scoped_lock lock(mux);
