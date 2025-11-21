@@ -147,9 +147,10 @@ namespace smt {
     }
 
     void parallel::worker::share_units() {
+      LOG_WORKER(0, "share_units ran\n");
       // Collect new units learned locally by this worker and send to batch manager
 
-      ctx->pop_to_base_lvl();
+      // ctx->pop_to_base_lvl();
       unsigned sz = ctx->assigned_literals().size();
       if (sz <= m_num_shared_units)
         return;
@@ -160,6 +161,12 @@ namespace smt {
         literal lit = ctx->assigned_literals()[j];
         bool_var v = lit.var();
         bool_var_data const &d = ctx->get_bdata(v);
+
+        // 1) Only level-0 assignments (global units)
+        if (d.m_scope_lvl > 0) {
+          // LOG_WORKER(0, " Skipping non-level-0 unit: " << v << "\n");
+          continue;
+        }
 
         if (!ctx->is_relevant(v) && m_config.m_share_units_relevant_only)
           continue;
@@ -173,29 +180,11 @@ namespace smt {
         if (m.is_and(e) || m.is_or(e))
           continue;
 
-        // 1) Only level-0 assignments (global units)
-        if (d.m_scope_lvl != 0)
-            continue;
-
-        // 2) Skip theory atoms (arith, etc.)
-        if (d.is_theory_atom())
-            continue;
-
-        // Optional: if you also want to skip equality/quantifier stuff:
-        if (d.is_eq() || d.is_quantifier())
-            continue;
-
-        if (m_config.m_share_units_initial_only && v >= m_num_initial_atoms) {
-            LOG_WORKER(4, " Skipping non-initial unit: " << v << "\n");
-            continue;
-        }
-
         if (lit.sign())
           e = m.mk_not(e); // negate if literal is negative
 
         shared_clause_buffer.push_back(e);
       }
-
       if (!shared_clause_buffer.empty())
         b.collect_clauses(m_l2g, id, shared_clause_buffer);
 
