@@ -248,51 +248,83 @@ namespace smt {
         m.limit().cancel();
     }
 
-    void parallel::batch_manager::backtrack(ast_translation &l2g, expr_ref_vector const &core,
-                                            search_tree::node<cube_config> *node) {
-        std::scoped_lock lock(mux);
-        IF_VERBOSE(1, verbose_stream() << "Batch manager backtracking.\n");
-        if (m_state != state::is_running)
-            return;
-        vector<cube_config::literal> g_core;
-        for (auto c : core) {
-            expr_ref g_c(l2g(c), m);
-            g_core.push_back(expr_ref(l2g(c), m));
-        }
-        m_search_tree.backtrack(node, g_core);
+    void parallel::batch_manager::backtrack(ast_translation &l2g,
+                              expr_ref_vector const &core,
+                              search_tree::node<cube_config>* node)
+    {
+        // ---- 1. OUTSIDE LOCK: translate to expr* only (safe & fast) ----
+        vector<expr*> raw_core;
+        raw_core.reserve(core.size());      // this is OK: vector<expr*>
+        for (expr* c : core)
+            raw_core.push_back(l2g(c));     // no obj_ref constructed yet
 
-        IF_VERBOSE(1, m_search_tree.display(verbose_stream() << bounded_pp_exprs(core) << "\n"););
-        if (m_search_tree.is_closed()) {
-            m_state = state::is_unsat;
-            cancel_workers();
+        bool became_unsat = false;
+
+        // ---- 2. LOCK ONLY for tree mutation / shared state ----
+        {
+            std::scoped_lock lock(mux);
+
+            IF_VERBOSE(1, verbose_stream() << "Batch manager backtracking.\n");
+
+            if (m_state != state::is_running)
+                return;
+
+            // Build g_core INSIDE lock, but DO NOT reserve()
+            vector<cube_config::literal> g_core;   // vector<obj_ref<expr>>
+            for (expr* ge : raw_core)
+                g_core.push_back(expr_ref(ge, m));  // construct obj_ref one by one
+
+            m_search_tree.backtrack(node, g_core);
+
+            if (m_search_tree.is_closed()) {
+                m_state = state::is_unsat;
+                became_unsat = true;
+            }
         }
+
+        // ---- 3. OUTSIDE LOCK: expensive printing and cancellation ----
+        IF_VERBOSE(1,
+            m_search_tree.display(verbose_stream() << bounded_pp_exprs(core) << "\n");
+        );
+
+        if (became_unsat)
+            cancel_workers();
     }
 
     void parallel::batch_manager::split(ast_translation &l2g, unsigned source_worker_id,
                                         search_tree::node<cube_config> *node, expr *atom) {
-        std::scoped_lock lock(mux);
         expr_ref lit(m), nlit(m);
         lit = l2g(atom);
         nlit = mk_not(m, lit);
         IF_VERBOSE(1, verbose_stream() << "Batch manager splitting on literal: " << mk_bounded_pp(lit, m, 3) << "\n");
-        if (m_state != state::is_running)
-            return;
-        // optional heuristic:
-        // node->get_status() == status::active
-        // and depth is 'high' enough
-        // then ignore split, and instead set the status of node to open.
-        ++m_stats.m_num_cubes;
-        m_stats.m_max_cube_depth = std::max(m_stats.m_max_cube_depth, node->depth() + 1);
-        m_search_tree.split(node, lit, nlit);
+        
+        {
+            std::scoped_lock lock(mux);
+            if (m_state != state::is_running)
+                return;
+            // optional heuristic:
+            // node->get_status() == status::active
+            // and depth is 'high' enough
+            // then ignore split, and instead set the status of node to open.
+            ++m_stats.m_num_cubes;
+            m_stats.m_max_cube_depth = std::max(m_stats.m_max_cube_depth, node->depth() + 1);
+            m_search_tree.split(node, lit, nlit);
+        }
     }
 
-    void parallel::batch_manager::collect_clause(ast_translation &l2g, unsigned source_worker_id, expr *clause) {
-        std::scoped_lock lock(mux);
+    void parallel::batch_manager::collect_clause(ast_translation &l2g,
+                                   unsigned source_worker_id,
+                                   expr *clause) {
         expr *g_clause = l2g(clause);
-        if (!shared_clause_set.contains(g_clause)) {
-            shared_clause_set.insert(g_clause);
-            shared_clause sc{source_worker_id, expr_ref(g_clause, m)};
-            shared_clause_trail.push_back(sc);
+        shared_clause sc{source_worker_id, expr_ref(g_clause, m)};
+
+        {
+            std::scoped_lock lock(mux);
+
+            if (!shared_clause_set.contains(g_clause)) {
+                shared_clause_set.insert(g_clause);
+                shared_clause_trail.push_back(std::move(sc));
+            }
         }
     }
 
@@ -305,15 +337,31 @@ namespace smt {
         }
     }
 
-    expr_ref_vector parallel::batch_manager::return_shared_clauses(ast_translation &g2l, unsigned &worker_limit,
-                                                                   unsigned worker_id) {
-        std::scoped_lock lock(mux);
-        expr_ref_vector result(g2l.to());
-        for (unsigned i = worker_limit; i < shared_clause_trail.size(); ++i) {
-            if (shared_clause_trail[i].source_worker_id != worker_id)
-                result.push_back(g2l(shared_clause_trail[i].clause.get()));
+    expr_ref_vector parallel::batch_manager::return_shared_clauses(ast_translation &g2l,
+                                                     unsigned &worker_limit,
+                                                     unsigned worker_id) {
+        vector<expr*> pending_clauses;
+        unsigned start, end;
+
+        {
+            std::scoped_lock lock(mux);
+
+            start = worker_limit;
+            end   = shared_clause_trail.size();
+
+            for (unsigned i = start; i < end; ++i) {
+                if (shared_clause_trail[i].source_worker_id != worker_id)
+                    pending_clauses.push_back(shared_clause_trail[i].clause.get());
+            }
+
+            worker_limit = end;
         }
-        worker_limit = shared_clause_trail.size();  // update the worker limit to the end of the current trail
+
+        // Translate outside lock (expensive)
+        expr_ref_vector result(g2l.to());
+        for (expr* gc : pending_clauses)
+            result.push_back(g2l(gc));
+
         return result;
     }
 
@@ -366,47 +414,82 @@ namespace smt {
     }
 
     void parallel::batch_manager::set_sat(ast_translation &l2g, model &m) {
-        std::scoped_lock lock(mux);
-        IF_VERBOSE(1, verbose_stream() << "Batch manager setting SAT.\n");
-        if (m_state != state::is_running)
-            return;
-        m_state = state::is_sat;
+        bool should_cancel = false;
+        {
+            std::scoped_lock lock(mux);
+            IF_VERBOSE(1, verbose_stream() << "Batch manager setting SAT.\n");
+
+            if (m_state != state::is_running)
+                return;
+
+            m_state = state::is_sat;
+            should_cancel = true; // notify after unlocking
+        }
+
         p.ctx.set_model(m.translate(l2g));
-        cancel_workers();
+
+        if (should_cancel)
+            cancel_workers();
     }
 
     void parallel::batch_manager::set_unsat(ast_translation &l2g, expr_ref_vector const &unsat_core) {
-        std::scoped_lock lock(mux);
-        IF_VERBOSE(1, verbose_stream() << "Batch manager setting UNSAT.\n");
-        if (m_state != state::is_running)
-            return;
-        m_state = state::is_unsat;
+        bool should_cancel = false;
 
-        // each call to check_sat needs to have a fresh unsat core
+        {
+            std::scoped_lock lock(mux);
+            IF_VERBOSE(1, verbose_stream() << "Batch manager setting UNSAT.\n");
+
+            if (m_state != state::is_running)
+                return;
+
+            m_state = state::is_unsat;
+            should_cancel = true;
+        }
+
         SASSERT(p.ctx.m_unsat_core.empty());
-        for (expr *e : unsat_core)
+        for (expr* e : unsat_core)
             p.ctx.m_unsat_core.push_back(l2g(e));
-        cancel_workers();
+
+        if (should_cancel)
+            cancel_workers();
     }
 
     void parallel::batch_manager::set_exception(unsigned error_code) {
-        std::scoped_lock lock(mux);
-        IF_VERBOSE(1, verbose_stream() << "Batch manager setting exception code: " << error_code << ".\n");
-        if (m_state != state::is_running)
-            return;
-        m_state = state::is_exception_code;
-        m_exception_code = error_code;
-        cancel_workers();
+        bool should_cancel = false;
+
+        {
+            std::scoped_lock lock(mux);
+            IF_VERBOSE(1, verbose_stream() << "Batch manager setting exception code.\n");
+
+            if (m_state != state::is_running)
+                return;
+
+            m_state = state::is_exception_code;
+            m_exception_code = error_code;
+            should_cancel = true;
+        }
+
+        if (should_cancel)
+            cancel_workers();
     }
 
     void parallel::batch_manager::set_exception(std::string const &msg) {
-        std::scoped_lock lock(mux);
-        IF_VERBOSE(1, verbose_stream() << "Batch manager setting exception msg: " << msg << ".\n");
-        if (m_state != state::is_running)
-            return;
-        m_state = state::is_exception_msg;
-        m_exception_msg = msg;
-        cancel_workers();
+        bool should_cancel = false;
+
+        {
+            std::scoped_lock lock(mux);
+            IF_VERBOSE(1, verbose_stream() << "Batch manager setting exception msg: " << msg << ".\n");
+
+            if (m_state != state::is_running)
+                return;
+
+            m_state = state::is_exception_msg;
+            m_exception_msg = msg;
+            should_cancel = true;
+        }
+
+        if (should_cancel)
+            cancel_workers();
     }
 
     lbool parallel::batch_manager::get_result() const {
