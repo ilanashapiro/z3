@@ -94,7 +94,7 @@ namespace smt {
             void backtrack(ast_translation& l2g, expr_ref_vector const& core, node* n);
             void split(ast_translation& l2g, unsigned id, node* n, expr* atom);
 
-            void collect_clause(ast_translation& l2g, unsigned source_worker_id, expr* clause);
+            void collect_clauses(ast_translation& l2g, unsigned source_worker_id, expr_ref_vector const& shared_clause_buffer);
             expr_ref_vector return_shared_clauses(ast_translation& g2l, unsigned& worker_limit, unsigned worker_id);
 
             lbool get_result() const;

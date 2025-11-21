@@ -147,29 +147,59 @@ namespace smt {
     }
 
     void parallel::worker::share_units() {
-        // Collect new units learned locally by this worker and send to batch manager
-        
-        ctx->pop_to_base_lvl();
-        unsigned sz = ctx->assigned_literals().size();
-        for (unsigned j = m_num_shared_units; j < sz; ++j) {  // iterate only over new literals since last sync
-            literal lit = ctx->assigned_literals()[j];
-            if (!ctx->is_relevant(lit.var()) && m_config.m_share_units_relevant_only)
-                continue;
+      // Collect new units learned locally by this worker and send to batch manager
 
-            if (m_config.m_share_units_initial_only && lit.var() >= m_num_initial_atoms) {
-                LOG_WORKER(4, " Skipping non-initial unit: " << lit.var() << "\n");
-                continue;  // skip non-iniial atoms if configured to do so
-            }
+      ctx->pop_to_base_lvl();
+      unsigned sz = ctx->assigned_literals().size();
+      if (sz <= m_num_shared_units)
+        return;
 
-            expr_ref e(ctx->bool_var2expr(lit.var()), ctx->m);  // turn literal into a Boolean expression
-            if (m.is_and(e) || m.is_or(e))
-                continue;
+      expr_ref_vector shared_clause_buffer(m);
 
-            if (lit.sign())
-                e = m.mk_not(e);  // negate if literal is negative
-            b.collect_clause(m_l2g, id, e);
+      for (unsigned j = m_num_shared_units; j < sz; ++j) { // iterate only over new literals since last sync
+        literal lit = ctx->assigned_literals()[j];
+        bool_var v = lit.var();
+        bool_var_data const &d = ctx->get_bdata(v);
+
+        if (!ctx->is_relevant(v) && m_config.m_share_units_relevant_only)
+          continue;
+
+        if (m_config.m_share_units_initial_only && v >= m_num_initial_atoms) {
+          LOG_WORKER(4, " Skipping non-initial unit: " << v << "\n");
+          continue; // skip non-initial atoms if configured to do so
         }
-        m_num_shared_units = sz;
+
+        expr_ref e(ctx->bool_var2expr(v), ctx->m); // turn literal into a Boolean expression
+        if (m.is_and(e) || m.is_or(e))
+          continue;
+
+        // 1) Only level-0 assignments (global units)
+        if (d.m_scope_lvl != 0)
+            continue;
+
+        // 2) Skip theory atoms (arith, etc.)
+        if (d.is_theory_atom())
+            continue;
+
+        // Optional: if you also want to skip equality/quantifier stuff:
+        if (d.is_eq() || d.is_quantifier())
+            continue;
+
+        if (m_config.m_share_units_initial_only && v >= m_num_initial_atoms) {
+            LOG_WORKER(4, " Skipping non-initial unit: " << v << "\n");
+            continue;
+        }
+
+        if (lit.sign())
+          e = m.mk_not(e); // negate if literal is negative
+
+        shared_clause_buffer.push_back(e);
+      }
+
+      if (!shared_clause_buffer.empty())
+        b.collect_clauses(m_l2g, id, shared_clause_buffer);
+
+      m_num_shared_units = sz;
     }
 
     void parallel::worker::simplify() {
@@ -252,38 +282,24 @@ namespace smt {
         m.limit().cancel();
     }
 
-    void parallel::batch_manager::backtrack(ast_translation &l2g,
-                              expr_ref_vector const &core,
-                              search_tree::node<cube_config>* node) {
-        bool became_unsat = false;
-
-        {
-            std::scoped_lock lock(mux);
-
-            IF_VERBOSE(1, verbose_stream() << "Batch manager backtracking.\n");
-
-            if (m_state != state::is_running)
-                return;
-
-            // Build g_core UNDER lock (uses l2g & shared manager m)
-            vector<cube_config::literal> g_core;
-            for (expr* c : core)
-                g_core.push_back(expr_ref(l2g(c), m));
-
-            m_search_tree.backtrack(node, g_core);
-
-            IF_VERBOSE(1,
-                m_search_tree.display(verbose_stream() << bounded_pp_exprs(core) << "\n");
-            );
-
-            if (m_search_tree.is_closed()) {
-                m_state = state::is_unsat;
-                became_unsat = true;
-            }
+    void parallel::batch_manager::backtrack(ast_translation &l2g, expr_ref_vector const &core,
+                                            search_tree::node<cube_config> *node) {
+        std::scoped_lock lock(mux);
+        IF_VERBOSE(1, verbose_stream() << "Batch manager backtracking.\n");
+        if (m_state != state::is_running)
+            return;
+        vector<cube_config::literal> g_core;
+        for (auto c : core) {
+            expr_ref g_c(l2g(c), m);
+            g_core.push_back(g_c);
         }
+        m_search_tree.backtrack(node, g_core);
 
-        if (became_unsat)
+        IF_VERBOSE(1, m_search_tree.display(verbose_stream() << bounded_pp_exprs(core) << "\n"););
+        if (m_search_tree.is_closed()) {
+            m_state = state::is_unsat;
             cancel_workers();
+        }
     }
 
     void parallel::batch_manager::split(ast_translation &l2g, unsigned source_worker_id,
@@ -293,7 +309,6 @@ namespace smt {
         lit = l2g(atom);
         nlit = mk_not(m, lit);
         IF_VERBOSE(1, verbose_stream() << "Batch manager splitting on literal: " << mk_bounded_pp(lit, m, 3) << "\n");
-        
         if (m_state != state::is_running)
             return;
         // optional heuristic:
@@ -305,16 +320,19 @@ namespace smt {
         m_search_tree.split(node, lit, nlit);
     }
 
-    void parallel::batch_manager::collect_clause(ast_translation &l2g,
+    void parallel::batch_manager::collect_clauses(ast_translation &l2g,
                                    unsigned source_worker_id,
-                                   expr *clause) {
+                                   expr_ref_vector const &shared_clause_buffer) {
         std::scoped_lock lock(mux);
-        expr *g_clause = l2g(clause);
-        shared_clause sc{source_worker_id, expr_ref(g_clause, m)};
-
-        if (!shared_clause_set.contains(g_clause)) {
-            shared_clause_set.insert(g_clause);
-            shared_clause_trail.push_back(std::move(sc));
+        IF_VERBOSE(1, verbose_stream() << "Batch manager collecting " << shared_clause_buffer.size() << " clauses from worker " << source_worker_id << "\n");
+        
+        for (expr *clause : shared_clause_buffer) {
+            expr *g_clause = l2g(clause);
+            shared_clause sc{source_worker_id, expr_ref(g_clause, m)};
+            if (!shared_clause_set.contains(g_clause)) {
+                shared_clause_set.insert(g_clause);
+                shared_clause_trail.push_back(std::move(sc));
+            }
         }
     }
 
@@ -394,82 +412,47 @@ namespace smt {
     }
 
     void parallel::batch_manager::set_sat(ast_translation &l2g, model &m) {
-        bool should_cancel = false;
-        {
-            std::scoped_lock lock(mux);
-            IF_VERBOSE(1, verbose_stream() << "Batch manager setting SAT.\n");
-
-            if (m_state != state::is_running)
-                return;
-
-            m_state = state::is_sat;
-            should_cancel = true; // notify after unlocking
-        }
-
+        std::scoped_lock lock(mux);
+        IF_VERBOSE(1, verbose_stream() << "Batch manager setting SAT.\n");
+        if (m_state != state::is_running)
+            return;
+        m_state = state::is_sat;
         p.ctx.set_model(m.translate(l2g));
-
-        if (should_cancel)
-            cancel_workers();
+        cancel_workers();
     }
 
     void parallel::batch_manager::set_unsat(ast_translation &l2g, expr_ref_vector const &unsat_core) {
-        bool should_cancel = false;
+        std::scoped_lock lock(mux);
+        IF_VERBOSE(1, verbose_stream() << "Batch manager setting UNSAT.\n");
+        if (m_state != state::is_running)
+            return;
+        m_state = state::is_unsat;
 
-        {
-            std::scoped_lock lock(mux);
-            IF_VERBOSE(1, verbose_stream() << "Batch manager setting UNSAT.\n");
-
-            if (m_state != state::is_running)
-                return;
-
-            m_state = state::is_unsat;
-            should_cancel = true;
-        }
-
+        // each call to check_sat needs to have a fresh unsat core
         SASSERT(p.ctx.m_unsat_core.empty());
-        for (expr* e : unsat_core)
+        for (expr *e : unsat_core)
             p.ctx.m_unsat_core.push_back(l2g(e));
-
-        if (should_cancel)
-            cancel_workers();
+        cancel_workers();
     }
 
     void parallel::batch_manager::set_exception(unsigned error_code) {
-        bool should_cancel = false;
-
-        {
-            std::scoped_lock lock(mux);
-            IF_VERBOSE(1, verbose_stream() << "Batch manager setting exception code.\n");
-
-            if (m_state != state::is_running)
-                return;
-
-            m_state = state::is_exception_code;
-            m_exception_code = error_code;
-            should_cancel = true;
-        }
-
-        if (should_cancel)
-            cancel_workers();
+        std::scoped_lock lock(mux);
+        IF_VERBOSE(1, verbose_stream() << "Batch manager setting exception code: " << error_code << ".\n");
+        if (m_state != state::is_running)
+            return;
+        m_state = state::is_exception_code;
+        m_exception_code = error_code;
+        cancel_workers();
     }
 
     void parallel::batch_manager::set_exception(std::string const &msg) {
-        bool should_cancel = false;
-
-        {
-            std::scoped_lock lock(mux);
-            IF_VERBOSE(1, verbose_stream() << "Batch manager setting exception msg: " << msg << ".\n");
-
-            if (m_state != state::is_running)
-                return;
-
-            m_state = state::is_exception_msg;
-            m_exception_msg = msg;
-            should_cancel = true;
-        }
-
-        if (should_cancel)
-            cancel_workers();
+        std::scoped_lock lock(mux);
+        IF_VERBOSE(1, verbose_stream() << "Batch manager setting exception msg: " << msg << ".\n");
+        if (m_state != state::is_running)
+            return;
+        m_state = state::is_exception_msg;
+        m_exception_msg = msg;
+        cancel_workers();
     }
 
     lbool parallel::batch_manager::get_result() const {
