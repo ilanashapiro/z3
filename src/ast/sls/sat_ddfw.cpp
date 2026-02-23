@@ -220,6 +220,7 @@ namespace sat {
         add_assumptions();
         for (unsigned v = 0; v < num_vars(); ++v) {
             value(v) = (m_rand() % 2) == 0; // m_use_list[lit.index()].size() >= m_use_list[nlit.index()].size();
+            m_vars[v].m_timestamp = 0;
         }
 
         if (!flatten_use_list())
@@ -270,6 +271,7 @@ namespace sat {
 
     void ddfw::flip(bool_var v) {
         ++m_flips;
+        m_vars[v].m_timestamp = m_flips;
         m_limit.inc();
         literal lit = literal(v, !value(v));
         literal nlit = ~lit;

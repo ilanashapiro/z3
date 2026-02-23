@@ -201,9 +201,9 @@ namespace smt {
                 js->get_antecedents(*this);
             }
             while (!m_todo_eqs.empty()) {
-                enode_pair p = m_todo_eqs.back();
+                auto [n1, n2] = m_todo_eqs.back();
                 m_todo_eqs.pop_back();
-                eq2literals(p.first, p.second);
+                eq2literals(n1, n2);
             }
             if (m_todo_js_qhead == m_todo_js.size()) {
                 m_antecedents = nullptr;
@@ -347,7 +347,7 @@ namespace smt {
         literal_vector & antecedents = m_tmp_literal_vector;
         antecedents.reset();
         justification2literals_core(js, antecedents);
-        m_ctx.get_clause_proof().propagate(consequent, *js, antecedents);
+        m_ctx.get_clause_proof().propagate(consequent, js, antecedents);
         for (literal l : antecedents)
             process_antecedent(l, num_marks);
         (void)consequent;
@@ -1333,9 +1333,8 @@ namespace smt {
         }
         else {
             pr = get_proof(consequent, conflict);
-            proof * prs[2] = { m_lit2proof[not_l], pr};
-            SASSERT(prs[0] && prs[1]);
-            pr = m.mk_unit_resolution(2, prs);
+            SASSERT(m_lit2proof[not_l] && pr);
+            pr = m.mk_unit_resolution({ m_lit2proof[not_l], pr });
         }
         expr_ref_buffer lits(m);
         for (literal lit : m_lemma) {
@@ -1348,7 +1347,7 @@ namespace smt {
         switch (lits.size()) {
         case 0:  fact = nullptr; break;
         case 1:  fact = lits[0]; break;
-        default: fact = m.mk_or(lits.size(), lits.data());
+        default: fact = m.mk_or(lits);
         }
         if (fact == nullptr)
             m_lemma_proof = pr;

@@ -6,10 +6,9 @@ on:
 permissions: read-all
 tools:
   view: {}
-  grep: {}
   glob: {}
   edit:
-  bash:
+  bash: true
 safe-outputs:
   create-pull-request:
     if-no-changes: ignore

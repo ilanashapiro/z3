@@ -423,6 +423,7 @@ namespace smt {
         st.update("minimized lits", m_stats.m_num_minimized_lits);
         st.update("num checks", m_stats.m_num_checks);
         st.update("mk bool var", m_stats.m_num_mk_bool_var ? m_stats.m_num_mk_bool_var - 1 : 0);
+        st.update("random seed", m_fparams.m_random_seed);
         m_qmanager->collect_statistics(st);
         m_asserted_formulas.collect_statistics(st);
         for (theory* th : m_theory_set) {
@@ -487,8 +488,8 @@ namespace smt {
             fmls.push_back(n);
         }
         for (unsigned i = 0; i < num_eq_antecedents; ++i) {
-            enode_pair const & p = eq_antecedents[i];
-            n = m.mk_eq(p.first->get_expr(), p.second->get_expr());
+            auto const& [n1, n2] = eq_antecedents[i];
+            n = m.mk_eq(n1->get_expr(), n2->get_expr());
             fmls.push_back(n);
         }
         if (x && y) {
@@ -697,7 +698,8 @@ namespace smt {
     }
 
     std::ostream& operator<<(std::ostream& out, enode_eq_pp const& p) {
-        return out << enode_pp(p.p.first, p.ctx) << " = " << enode_pp(p.p.second, p.ctx) << "\n";
+        auto const& [n1, n2] = p.p;
+        return out << enode_pp(n1, p.ctx) << " = " << enode_pp(n2, p.ctx) << "\n";
     }
 
     void context::log_stats() {

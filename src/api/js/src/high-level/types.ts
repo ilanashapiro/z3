@@ -36,7 +36,8 @@ export type AnySort<Name extends string = 'main'> =
   | SMTArraySort<Name>
   | FPSort<Name>
   | FPRMSort<Name>
-  | SeqSort<Name>;
+  | SeqSort<Name>
+  | ReSort<Name>;
 /** @hidden */
 export type AnyExpr<Name extends string = 'main'> =
   | Expr<Name>
@@ -50,7 +51,9 @@ export type AnyExpr<Name extends string = 'main'> =
   | FP<Name>
   | FPNum<Name>
   | FPRM<Name>
-  | Seq<Name>;
+  | Seq<Name>
+  | Re<Name>
+  | FiniteSet<Name>;
 /** @hidden */
 export type AnyAst<Name extends string = 'main'> = AnyExpr<Name> | AnySort<Name> | FuncDecl<Name>;
 
@@ -70,6 +73,8 @@ export type SortToExprMap<S extends AnySort<Name>, Name extends string = 'main'>
   ? FPRM<Name>
   : S extends SeqSort<Name>
   ? Seq<Name>
+  : S extends ReSort<Name>
+  ? Re<Name>
   : S extends Sort<Name>
   ? Expr<Name, S, Z3_ast>
   : never;
@@ -184,12 +189,12 @@ export interface Context<Name extends string = 'main'> {
 
   /**
    * Set the pretty printing mode for ASTs.
-   * 
+   *
    * @param mode - The print mode to use:
    *   - Z3_PRINT_SMTLIB_FULL (0): Print AST nodes in SMTLIB verbose format.
    *   - Z3_PRINT_LOW_LEVEL (1): Print AST nodes using a low-level format.
    *   - Z3_PRINT_SMTLIB2_COMPLIANT (2): Print AST nodes in SMTLIB 2.x compliant format.
-   * 
+   *
    * @category Functions
    */
   setPrintMode(mode: Z3_ast_print_mode): void;
@@ -279,6 +284,9 @@ export interface Context<Name extends string = 'main'> {
   isRealSort(obj: unknown): boolean;
 
   /** @category Functions */
+  isRCFNum(obj: unknown): obj is RCFNum<Name>;
+
+  /** @category Functions */
   isBitVecSort(obj: unknown): obj is BitVecSort<number, Name>;
 
   /** @category Functions */
@@ -322,6 +330,12 @@ export interface Context<Name extends string = 'main'> {
 
   /** @category Functions */
   isString(obj: unknown): obj is Seq<Name>;
+
+  /** @category Functions */
+  isFiniteSetSort(obj: unknown): obj is FiniteSetSort<Name>;
+
+  /** @category Functions */
+  isFiniteSet(obj: unknown): obj is FiniteSet<Name>;
 
   /** @category Functions */
   isProbe(obj: unknown): obj is Probe<Name>;
@@ -443,6 +457,8 @@ export interface Context<Name extends string = 'main'> {
   /** @category Expressions */
   readonly Real: RealCreation<Name>;
   /** @category Expressions */
+  readonly RCFNum: RCFNumCreation<Name>;
+  /** @category Expressions */
   readonly BitVec: BitVecCreation<Name>;
   /** @category Expressions */
   readonly Float: FPCreation<Name>;
@@ -453,9 +469,13 @@ export interface Context<Name extends string = 'main'> {
   /** @category Expressions */
   readonly Seq: SeqCreation<Name>;
   /** @category Expressions */
+  readonly Re: ReCreation<Name>;
+  /** @category Expressions */
   readonly Array: SMTArrayCreation<Name>;
   /** @category Expressions */
   readonly Set: SMTSetCreation<Name>;
+  /** @category Expressions */
+  readonly FiniteSet: FiniteSetCreation<Name>;
   /** @category Expressions */
   readonly Datatype: DatatypeCreation<Name>;
 
@@ -797,6 +817,9 @@ export interface Context<Name extends string = 'main'> {
   /** @category Operations */
   substituteFuns(t: Expr<Name>, ...substitutions: [FuncDecl<Name>, Expr<Name>][]): Expr<Name>;
 
+  /** @category Operations */
+  updateField(t: DatatypeExpr<Name>, fieldAccessor: FuncDecl<Name>, newValue: Expr<Name>): DatatypeExpr<Name>;
+
   simplify(expr: Expr<Name>): Promise<Expr<Name>>;
 
   /** @category Operations */
@@ -840,6 +863,61 @@ export interface Context<Name extends string = 'main'> {
 
   /** @category Operations */
   isSubset<ElemSort extends AnySort<Name>>(a: SMTSet<Name, ElemSort>, b: SMTSet<Name, ElemSort>): Bool<Name>;
+
+  //////////////////////
+  // Regular Expressions
+  //////////////////////
+
+  /** @category RegularExpression */
+  InRe(seq: Seq<Name> | string, re: Re<Name>): Bool<Name>;
+
+  /** @category RegularExpression */
+  Union<SeqSortRef extends SeqSort<Name>>(...res: Re<Name, SeqSortRef>[]): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  Intersect<SeqSortRef extends SeqSort<Name>>(...res: Re<Name, SeqSortRef>[]): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  ReConcat<SeqSortRef extends SeqSort<Name>>(...res: Re<Name, SeqSortRef>[]): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  Plus<SeqSortRef extends SeqSort<Name>>(re: Re<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  Star<SeqSortRef extends SeqSort<Name>>(re: Re<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  Option<SeqSortRef extends SeqSort<Name>>(re: Re<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  Complement<SeqSortRef extends SeqSort<Name>>(re: Re<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  Diff<SeqSortRef extends SeqSort<Name>>(a: Re<Name, SeqSortRef>, b: Re<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  Range<SeqSortRef extends SeqSort<Name>>(lo: Seq<Name, SeqSortRef> | string, hi: Seq<Name, SeqSortRef> | string): Re<Name, SeqSortRef>;
+
+  /**
+   * Create a bounded repetition regex
+   * @param re The regex to repeat
+   * @param lo Minimum number of repetitions
+   * @param hi Maximum number of repetitions (0 means unbounded, i.e., at least lo)
+   * @category RegularExpression
+   */
+  Loop<SeqSortRef extends SeqSort<Name>>(re: Re<Name, SeqSortRef>, lo: number, hi?: number): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  Power<SeqSortRef extends SeqSort<Name>>(re: Re<Name, SeqSortRef>, n: number): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  AllChar<SeqSortRef extends SeqSort<Name>>(reSort: ReSort<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  Empty<SeqSortRef extends SeqSort<Name>>(reSort: ReSort<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+
+  /** @category RegularExpression */
+  Full<SeqSortRef extends SeqSort<Name>>(reSort: ReSort<Name, SeqSortRef>): Re<Name, SeqSortRef>;
 
   /**
    * Create a partial order relation over a sort.
@@ -918,6 +996,29 @@ export interface Solver<Name extends string = 'main'> {
 
   add(...exprs: (Bool<Name> | AstVector<Name, Bool<Name>>)[]): void;
 
+  /**
+   * Assert a constraint and associate it with a tracking literal (Boolean constant).
+   * This is the TypeScript equivalent of `assertAndTrack` in other Z3 language bindings.
+   *
+   * When the solver returns `unsat`, the tracked literals that contributed to
+   * unsatisfiability can be retrieved via {@link unsatCore}.
+   *
+   * @param expr - The Boolean expression to assert
+   * @param constant - A Boolean constant (or its name as a string) used as the tracking literal
+   *
+   * @example
+   * ```typescript
+   * const solver = new Solver();
+   * const x = Int.const('x');
+   * const p1 = Bool.const('p1');
+   * const p2 = Bool.const('p2');
+   * solver.addAndTrack(x.gt(0), p1);
+   * solver.addAndTrack(x.lt(0), p2);
+   * if (await solver.check() === 'unsat') {
+   *   const core = solver.unsatCore(); // contains p1 and p2
+   * }
+   * ```
+   */
   addAndTrack(expr: Bool<Name>, constant: Bool<Name> | string): void;
 
   /**
@@ -1090,6 +1191,105 @@ export interface Solver<Name extends string = 'main'> {
   trail(): AstVector<Name, Bool<Name>>;
 
   /**
+   * Retrieve the decision levels for each literal in the solver's trail.
+   * The returned array has one entry per trail literal, indicating at which
+   * decision level it was assigned.
+   *
+   * @returns An array of numbers where element i is the decision level of the i-th trail literal
+   *
+   * @example
+   * ```typescript
+   * const solver = new Solver();
+   * const x = Bool.const('x');
+   * solver.add(x);
+   * await solver.check();
+   * const levels = solver.trailLevels();
+   * console.log('Trail levels:', levels);
+   * ```
+   */
+  trailLevels(): number[];
+
+  /**
+   * Extract cubes from the solver for cube-and-conquer parallel solving.
+   * Each call returns the next cube (conjunction of literals) from the solver.
+   * Returns an empty AstVector when the search space is exhausted.
+   *
+   * @param vars - Optional vector of variables to use as cube variables
+   * @param cutoff - Backtrack level cutoff for cube generation (default: 0xFFFFFFFF)
+   * @returns A promise resolving to an AstVector containing the cube literals
+   *
+   * @example
+   * ```typescript
+   * const solver = new Solver();
+   * const x = Bool.const('x');
+   * const y = Bool.const('y');
+   * solver.add(x.or(y));
+   * const cube = await solver.cube(undefined, 1);
+   * console.log('Cube length:', cube.length());
+   * ```
+   */
+  cube(vars?: AstVector<Name, Bool<Name>>, cutoff?: number): Promise<AstVector<Name, Bool<Name>>>;
+
+  /**
+   * Retrieve fixed assignments to a set of variables as consequences given assumptions.
+   * Each consequence is an implication: assumptions => variable = value.
+   *
+   * @param assumptions - Assumptions to use during consequence finding
+   * @param variables - Variables to find consequences for
+   * @returns A promise resolving to the status and a vector of consequence expressions
+   *
+   * @example
+   * ```typescript
+   * const solver = new Solver();
+   * const x = Bool.const('x');
+   * const y = Bool.const('y');
+   * solver.add(x.implies(y));
+   * const [status, consequences] = await solver.getConsequences([], [x, y]);
+   * ```
+   */
+  getConsequences(
+    assumptions: (Bool<Name> | AstVector<Name, Bool<Name>>)[],
+    variables: Expr<Name>[],
+  ): Promise<[CheckSatResult, AstVector<Name, Bool<Name>>]>;
+
+  /**
+   * Solve constraints treating given variables symbolically, replacing their
+   * occurrences by terms. Guards condition the substitutions.
+   *
+   * @param variables - Variables to solve for
+   * @param terms - Substitution terms for the variables
+   * @param guards - Boolean guards for the substitutions
+   *
+   * @example
+   * ```typescript
+   * const solver = new Solver();
+   * const x = Int.const('x');
+   * const y = Int.const('y');
+   * solver.add(x.eq(y.add(1)));
+   * solver.solveFor([x], [y.add(1)], []);
+   * ```
+   */
+  solveFor(variables: Expr<Name>[], terms: Expr<Name>[], guards: Bool<Name>[]): void;
+
+  /**
+   * Set an initial value hint for a variable to guide the solver's search heuristics.
+   * This can improve performance when a good initial value is known.
+   *
+   * @param variable - The variable to set an initial value for
+   * @param value - The initial value for the variable
+   *
+   * @example
+   * ```typescript
+   * const solver = new Solver();
+   * const x = Int.const('x');
+   * solver.setInitialValue(x, Int.val(42));
+   * solver.add(x.gt(0));
+   * await solver.check();
+   * ```
+   */
+  setInitialValue(variable: Expr<Name>, value: Expr<Name>): void;
+
+  /**
    * Retrieve the root of the congruence class containing the given expression.
    * This is useful for understanding equality reasoning in the solver.
    *
@@ -1173,6 +1373,28 @@ export interface Solver<Name extends string = 'main'> {
   fromFile(filename: string): void;
 
   /**
+   * Convert the solver's assertions to SMT-LIB2 format as a benchmark.
+   * 
+   * This exports the current set of assertions in the solver as an SMT-LIB2 string,
+   * which can be used for bug reporting, sharing problems, or benchmarking.
+   *
+   * @param status - Status string such as "sat", "unsat", or "unknown" (default: "unknown")
+   * @returns A string representation of the solver's assertions in SMT-LIB2 format
+   *
+   * @example
+   * ```typescript
+   * const solver = new Solver();
+   * const x = Int.const('x');
+   * const y = Int.const('y');
+   * solver.add(x.gt(0));
+   * solver.add(y.eq(x.add(1)));
+   * const smtlib2 = solver.toSmtlib2('unknown');
+   * console.log(smtlib2); // Prints SMT-LIB2 formatted problem
+   * ```
+   */
+  toSmtlib2(status?: string): string;
+
+  /**
    * Manually decrease the reference count of the solver
    * This is automatically done when the solver is garbage collected,
    * but calling this eagerly can help release memory sooner.
@@ -1197,6 +1419,27 @@ export interface Optimize<Name extends string = 'main'> {
 
   addSoft(expr: Bool<Name>, weight: number | bigint | string | CoercibleRational, id?: number | string): void;
 
+  /**
+   * Assert a constraint and associate it with a tracking literal (Boolean constant).
+   * This is the TypeScript equivalent of `assertAndTrack` in other Z3 language bindings.
+   *
+   * When the optimizer returns `unsat`, the tracked literals that contributed to
+   * unsatisfiability can be used to identify which constraints caused the conflict.
+   *
+   * @param expr - The Boolean expression to assert
+   * @param constant - A Boolean constant (or its name as a string) used as the tracking literal
+   *
+   * @example
+   * ```typescript
+   * const opt = new Optimize();
+   * const x = Int.const('x');
+   * const p1 = Bool.const('p1');
+   * const p2 = Bool.const('p2');
+   * opt.addAndTrack(x.gt(0), p1);
+   * opt.addAndTrack(x.lt(0), p2);
+   * const result = await opt.check(); // 'unsat'
+   * ```
+   */
   addAndTrack(expr: Bool<Name>, constant: Bool<Name> | string): void;
 
   assertions(): AstVector<Name, Bool<Name>>;
@@ -1212,6 +1455,25 @@ export interface Optimize<Name extends string = 'main'> {
   model(): Model<Name>;
 
   statistics(): Statistics<Name>;
+
+  /**
+   * Set an initial value hint for a variable to guide the optimizer's search heuristics.
+   * This can improve performance when a good initial value is known.
+   *
+   * @param variable - The variable to set an initial value for
+   * @param value - The initial value for the variable
+   *
+   * @example
+   * ```typescript
+   * const opt = new Optimize();
+   * const x = Int.const('x');
+   * opt.setInitialValue(x, Int.val(42));
+   * opt.add(x.gt(0));
+   * opt.maximize(x);
+   * await opt.check();
+   * ```
+   */
+  setInitialValue(variable: Expr<Name>, value: Expr<Name>): void;
 
   /**
    * Manually decrease the reference count of the optimize
@@ -1518,16 +1780,16 @@ export interface Model<Name extends string = 'main'> extends Iterable<FuncDecl<N
 export interface StatisticsEntry<Name extends string = 'main'> {
   /** @hidden */
   readonly __typename: 'StatisticsEntry';
-  
+
   /** The key/name of this statistic */
   readonly key: string;
-  
+
   /** The numeric value of this statistic */
   readonly value: number;
-  
+
   /** True if this statistic is stored as an unsigned integer */
   readonly isUint: boolean;
-  
+
   /** True if this statistic is stored as a double */
   readonly isDouble: boolean;
 }
@@ -1538,8 +1800,8 @@ export interface StatisticsCtor<Name extends string> {
 
 /**
  * Statistics for solver operations
- * 
- * Provides access to performance metrics, memory usage, decision counts, 
+ *
+ * Provides access to performance metrics, memory usage, decision counts,
  * and other diagnostic information from solver operations.
  */
 export interface Statistics<Name extends string = 'main'> extends Iterable<StatisticsEntry<Name>> {
@@ -1614,7 +1876,9 @@ export interface Sort<Name extends string = 'main'> extends Ast<Name, Z3_sort> {
     | DatatypeSort['__typename']
     | FPSort['__typename']
     | FPRMSort['__typename']
-    | SeqSort['__typename'];
+    | SeqSort['__typename']
+    | ReSort['__typename']
+    | FiniteSetSort['__typename'];
 
   kind(): Z3_sort_kind;
 
@@ -1741,8 +2005,10 @@ export interface Expr<Name extends string = 'main', S extends Sort<Name> = AnySo
     | FP['__typename']
     | FPRM['__typename']
     | Seq['__typename']
+    | Re['__typename']
     | SMTArray['__typename']
-    | DatatypeExpr['__typename'];
+    | DatatypeExpr['__typename']
+    | FiniteSet['__typename'];
 
   get sort(): S;
 
@@ -1983,6 +2249,212 @@ export interface RatNum<Name extends string = 'main'> extends Arith<Name> {
   asDecimal(prec?: number): string;
 
   asString(): string;
+}
+
+/**
+ * A Real Closed Field (RCF) numeral.
+ *
+ * RCF numerals can represent:
+ * - Rational numbers
+ * - Algebraic numbers (roots of polynomials)
+ * - Transcendental extensions (e.g., pi, e)
+ * - Infinitesimal extensions
+ *
+ * ```typescript
+ * const { RCFNum } = Context('main');
+ *
+ * // Create pi
+ * const pi = RCFNum.pi();
+ * console.log(pi.toDecimal(10)); // "3.1415926536"
+ *
+ * // Create a rational
+ * const half = new RCFNum('1/2');
+ *
+ * // Arithmetic
+ * const sum = pi.add(half);
+ *
+ * // Check properties
+ * console.log(pi.isTranscendental()); // true
+ * console.log(half.isRational()); // true
+ * ```
+ * @category Arithmetic
+ */
+export interface RCFNum<Name extends string = 'main'> {
+  /** @hidden */
+  readonly __typename: 'RCFNum';
+
+  /** @hidden */
+  readonly ctx: Context<Name>;
+
+  /**
+   * Add two RCF numerals.
+   * @param other - The RCF numeral to add
+   * @returns this + other
+   */
+  add(other: RCFNum<Name>): RCFNum<Name>;
+
+  /**
+   * Subtract two RCF numerals.
+   * @param other - The RCF numeral to subtract
+   * @returns this - other
+   */
+  sub(other: RCFNum<Name>): RCFNum<Name>;
+
+  /**
+   * Multiply two RCF numerals.
+   * @param other - The RCF numeral to multiply
+   * @returns this * other
+   */
+  mul(other: RCFNum<Name>): RCFNum<Name>;
+
+  /**
+   * Divide two RCF numerals.
+   * @param other - The RCF numeral to divide by
+   * @returns this / other
+   */
+  div(other: RCFNum<Name>): RCFNum<Name>;
+
+  /**
+   * Negate this RCF numeral.
+   * @returns -this
+   */
+  neg(): RCFNum<Name>;
+
+  /**
+   * Compute the multiplicative inverse.
+   * @returns 1/this
+   */
+  inv(): RCFNum<Name>;
+
+  /**
+   * Raise this RCF numeral to a power.
+   * @param k - The exponent
+   * @returns this^k
+   */
+  power(k: number): RCFNum<Name>;
+
+  /**
+   * Check if this RCF numeral is less than another.
+   * @param other - The RCF numeral to compare with
+   * @returns true if this < other
+   */
+  lt(other: RCFNum<Name>): boolean;
+
+  /**
+   * Check if this RCF numeral is greater than another.
+   * @param other - The RCF numeral to compare with
+   * @returns true if this > other
+   */
+  gt(other: RCFNum<Name>): boolean;
+
+  /**
+   * Check if this RCF numeral is less than or equal to another.
+   * @param other - The RCF numeral to compare with
+   * @returns true if this <= other
+   */
+  le(other: RCFNum<Name>): boolean;
+
+  /**
+   * Check if this RCF numeral is greater than or equal to another.
+   * @param other - The RCF numeral to compare with
+   * @returns true if this >= other
+   */
+  ge(other: RCFNum<Name>): boolean;
+
+  /**
+   * Check if this RCF numeral is equal to another.
+   * @param other - The RCF numeral to compare with
+   * @returns true if this == other
+   */
+  eq(other: RCFNum<Name>): boolean;
+
+  /**
+   * Check if this RCF numeral is not equal to another.
+   * @param other - The RCF numeral to compare with
+   * @returns true if this != other
+   */
+  neq(other: RCFNum<Name>): boolean;
+
+  /**
+   * Check if this RCF numeral is a rational number.
+   * @returns true if this is rational
+   */
+  isRational(): boolean;
+
+  /**
+   * Check if this RCF numeral is an algebraic number.
+   * @returns true if this is algebraic
+   */
+  isAlgebraic(): boolean;
+
+  /**
+   * Check if this RCF numeral is an infinitesimal.
+   * @returns true if this is infinitesimal
+   */
+  isInfinitesimal(): boolean;
+
+  /**
+   * Check if this RCF numeral is a transcendental number.
+   * @returns true if this is transcendental
+   */
+  isTranscendental(): boolean;
+
+  /**
+   * Convert this RCF numeral to a string.
+   * @param compact - If true, use compact representation
+   * @returns String representation
+   */
+  toString(compact?: boolean): string;
+
+  /**
+   * Convert this RCF numeral to a decimal string.
+   * @param precision - Number of decimal places
+   * @returns Decimal string representation
+   */
+  toDecimal(precision: number): string;
+}
+
+/**
+ * Creation interface for RCF numerals
+ * @category Arithmetic
+ */
+export interface RCFNumCreation<Name extends string> {
+  /**
+   * Create an RCF numeral from a rational string.
+   * @param value - String representation of a rational number (e.g., "3/2", "0.5", "42")
+   */
+  (value: string): RCFNum<Name>;
+
+  /**
+   * Create an RCF numeral from a small integer.
+   * @param value - Integer value
+   */
+  (value: number): RCFNum<Name>;
+
+  /**
+   * Create an RCF numeral representing pi.
+   */
+  pi(): RCFNum<Name>;
+
+  /**
+   * Create an RCF numeral representing e (Euler's constant).
+   */
+  e(): RCFNum<Name>;
+
+  /**
+   * Create an RCF numeral representing an infinitesimal.
+   */
+  infinitesimal(): RCFNum<Name>;
+
+  /**
+   * Find roots of a polynomial.
+   *
+   * The polynomial is a[n-1]*x^(n-1) + ... + a[1]*x + a[0].
+   *
+   * @param coefficients - Polynomial coefficients (constant term first)
+   * @returns Array of RCF numerals representing the roots
+   */
+  roots(coefficients: RCFNum<Name>[]): RCFNum<Name>[];
 }
 
 /**
@@ -2442,6 +2914,60 @@ export interface SMTSet<Name extends string = 'main', ElemSort extends AnySort<N
 }
 //////////////////////////////////////////
 //
+// Finite Sets
+//
+//////////////////////////////////////////
+
+/**
+ * Represents a finite set sort
+ *
+ * @typeParam ElemSort The sort of elements in the finite set
+ * @category Finite Sets
+ */
+export interface FiniteSetSort<Name extends string = 'main', ElemSort extends Sort<Name> = Sort<Name>>
+  extends Sort<Name> {
+  readonly __typename: 'FiniteSetSort';
+  /** Returns the element sort of this finite set sort */
+  elemSort(): ElemSort;
+}
+
+/** @category Finite Sets */
+export interface FiniteSetCreation<Name extends string> {
+  sort<ElemSort extends Sort<Name>>(elemSort: ElemSort): FiniteSetSort<Name, ElemSort>;
+
+  const<ElemSort extends Sort<Name>>(name: string, elemSort: ElemSort): FiniteSet<Name, ElemSort>;
+
+  consts<ElemSort extends Sort<Name>>(names: string | string[], elemSort: ElemSort): FiniteSet<Name, ElemSort>[];
+
+  empty<ElemSort extends Sort<Name>>(sort: ElemSort): FiniteSet<Name, ElemSort>;
+
+  singleton<ElemSort extends Sort<Name>>(elem: Expr<Name>): FiniteSet<Name, ElemSort>;
+
+  range(low: Expr<Name>, high: Expr<Name>): FiniteSet<Name, Sort<Name>>;
+}
+
+/**
+ * Represents a finite set expression
+ *
+ * @typeParam ElemSort The sort of elements in the finite set
+ * @category Finite Sets
+ */
+export interface FiniteSet<Name extends string = 'main', ElemSort extends Sort<Name> = Sort<Name>>
+  extends Expr<Name, FiniteSetSort<Name, ElemSort>, Z3_ast> {
+  readonly __typename: 'FiniteSet';
+
+  union(other: FiniteSet<Name, ElemSort>): FiniteSet<Name, ElemSort>;
+  intersect(other: FiniteSet<Name, ElemSort>): FiniteSet<Name, ElemSort>;
+  diff(other: FiniteSet<Name, ElemSort>): FiniteSet<Name, ElemSort>;
+  contains(elem: Expr<Name>): Bool<Name>;
+  size(): Expr<Name>;
+  subsetOf(other: FiniteSet<Name, ElemSort>): Bool<Name>;
+  map(f: Expr<Name>): FiniteSet<Name, Sort<Name>>;
+  filter(f: Expr<Name>): FiniteSet<Name, ElemSort>;
+}
+
+//////////////////////////////////////////
+//
 // Datatypes
 //
 //////////////////////////////////////////
@@ -2894,6 +3420,85 @@ export interface Seq<Name extends string = 'main', ElemSort extends Sort<Name> =
 
   /** @category Operations */
   replaceAll(src: Seq<Name, ElemSort> | string, dst: Seq<Name, ElemSort> | string): Seq<Name, ElemSort>;
+}
+
+///////////////////////
+// Regular Expressions
+///////////////////////
+
+/**
+ * Regular expression sort
+ * @category RegularExpression
+ */
+export interface ReSort<Name extends string = 'main', SeqSortRef extends SeqSort<Name> = SeqSort<Name>> extends Sort<Name> {
+  /** @hidden */
+  readonly __typename: 'ReSort';
+
+  /**
+   * Get the basis (underlying sequence sort) of this regular expression sort
+   */
+  basis(): SeqSortRef;
+
+  cast(other: Re<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+  cast(other: CoercibleToExpr<Name>): Expr<Name>;
+}
+
+/** @category RegularExpression */
+export interface ReCreation<Name extends string> {
+  /**
+   * Create a regular expression sort over the given sequence sort
+   */
+  sort<SeqSortRef extends SeqSort<Name>>(seqSort: SeqSortRef): ReSort<Name, SeqSortRef>;
+
+  /**
+   * Convert a sequence to a regular expression that accepts exactly that sequence
+   */
+  toRe(seq: Seq<Name> | string): Re<Name>;
+}
+
+/**
+ * Regular expression expression
+ * @category RegularExpression
+ */
+export interface Re<Name extends string = 'main', SeqSortRef extends SeqSort<Name> = SeqSort<Name>>
+  extends Expr<Name, ReSort<Name, SeqSortRef>, Z3_ast> {
+  /** @hidden */
+  readonly __typename: 'Re';
+
+  /** @category Operations */
+  plus(): Re<Name, SeqSortRef>;
+
+  /** @category Operations */
+  star(): Re<Name, SeqSortRef>;
+
+  /** @category Operations */
+  option(): Re<Name, SeqSortRef>;
+
+  /** @category Operations */
+  complement(): Re<Name, SeqSortRef>;
+
+  /** @category Operations */
+  union(other: Re<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+
+  /** @category Operations */
+  intersect(other: Re<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+
+  /** @category Operations */
+  diff(other: Re<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+
+  /** @category Operations */
+  concat(other: Re<Name, SeqSortRef>): Re<Name, SeqSortRef>;
+
+  /**
+   * Create a bounded repetition of this regex
+   * @param lo Minimum number of repetitions
+   * @param hi Maximum number of repetitions (0 means unbounded, i.e., at least lo)
+   * @category Operations
+   */
+  loop(lo: number, hi?: number): Re<Name, SeqSortRef>;
+
+  /** @category Operations */
+  power(n: number): Re<Name, SeqSortRef>;
 }
 
 /**

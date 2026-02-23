@@ -100,7 +100,7 @@ namespace datalog {
             new_tail.push_back(m.mk_eq(kv.m_value, tmp));
         }
         proof_ref pr(m);
-        src_manager->mk_rule(m.mk_implies(m.mk_and(new_tail.size(), new_tail.data()), new_head), pr, dest, r.name());
+        src_manager->mk_rule(m.mk_implies(m.mk_and(new_tail), new_head), pr, dest, r.name());
     }
 
     expr_ref mk_array_instantiation::create_head(app* old_head)  {
@@ -277,7 +277,7 @@ namespace datalog {
                 new_args.push_back(arg_correspondance[i][chosen[i]].get());
             }
             res.push_back(create_pred(old_pred, new_args));
-            unsigned pos=-1;
+            unsigned pos = UINT_MAX;
             do {
                 pos++;
                 if(pos==chosen.size()){

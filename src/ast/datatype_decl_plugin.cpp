@@ -17,6 +17,8 @@ Revision History:
 
 --*/
 
+#include<sstream>
+#include<format>
 #include "util/warning.h"
 #include "ast/array_decl_plugin.h"
 #include "ast/seq_decl_plugin.h"
@@ -377,10 +379,9 @@ namespace datatype {
                 return nullptr;
             }
             if (rng != domain[1]) {
-                std::ostringstream buffer;
-                buffer << "second argument to field update should be " << mk_ismt2_pp(rng, m) 
-                       << " instead of " << mk_ismt2_pp(domain[1], m);
-                m.raise_exception(buffer.str());
+                m.raise_exception(std::format("second argument to field update should be {} instead of {}",
+                                               to_string(mk_ismt2_pp(rng, m)),
+                                               to_string(mk_ismt2_pp(domain[1], m))));
                 return nullptr;
             }
             range = domain[0];
@@ -844,6 +845,8 @@ namespace datatype {
             if (!is_declared(s))
                 return nullptr;
             def & d = get_def(s->get_name());
+            if (n != d.params().size()) 
+                throw default_exception("datatype " + s->get_name().str() + " has " + std::to_string(n) + " parameters, but " + std::to_string(d.params().size()) + " were expected");
             SASSERT(n == d.params().size());
             for (unsigned i = 0; i < n; ++i) {
                 sort* ps = get_datatype_parameter_sort(s, i);

@@ -585,7 +585,7 @@ namespace datalog {
         }
         counter ctr;
         ctr.count(joined_col_cnt, tgt_cols);
-        if (ctr.get_max_counter_value()>1 || (joined_col_cnt && ctr.get_max_positive()!=joined_col_cnt-1)) {
+        if (ctr.get_max_counter_value()>1 || (joined_col_cnt && ctr.get_max_positive().value_or(0)!=joined_col_cnt-1)) {
             return nullptr;
         }
         return alloc(intersection_filter_fn, *this);
@@ -712,8 +712,8 @@ namespace datalog {
     rule * mk_explanations::get_e_rule(rule * r) {
         rule_counter ctr;
         ctr.count_rule_vars(r);
-        unsigned max_var;
-        unsigned next_var = ctr.get_max_positive(max_var) ? (max_var+1) : 0;
+        auto max_var = ctr.get_max_positive();
+        unsigned next_var = max_var.has_value() ? (*max_var + 1) : 0;
         unsigned head_var = next_var++;
         app_ref e_head(get_e_lit(r->get_head(), head_var), m_manager);
 
@@ -837,8 +837,8 @@ namespace datalog {
             SASSERT(&expl_singleton->get_plugin()==m_er_plugin);
             m_e_fact_relation = static_cast<explanation_relation *>(expl_singleton);
         }
-        func_decl_set predicates(m_context.get_predicates());
-        for (func_decl* orig_decl : predicates) {
+
+        for (func_decl* orig_decl : m_context.get_predicates()) {
             TRACE(dl, tout << mk_pp(orig_decl, m_manager) << "\n";);
             func_decl * e_decl = get_e_decl(orig_decl);
 
