@@ -21,7 +21,6 @@ Revision History:
 
 #pragma once
 
-#include <optional>
 #include <string>
 
 #include "ast/ast.h"
@@ -54,9 +53,9 @@ public:
     ast_manager & get_manager() const { return m; }
 
     void register_decl(func_decl *fdecl);
-    std::optional<unsigned> find_idx(func_decl * sym) const;
+    bool find_idx(func_decl * sym, unsigned & idx) const;
     bool has_index(func_decl * sym, unsigned idx) const
-    {auto v = find_idx(sym); return v && *v == idx;}
+    {unsigned v; return find_idx(sym, v) && idx == v;}
 
     bool is_muxed(func_decl *fdecl) const {return m_muxes.contains(fdecl);}
 

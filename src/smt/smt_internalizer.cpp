@@ -607,7 +607,7 @@ namespace smt {
         m_lambdas.insert(lam_node, q);
         m_app2enode.setx(q->get_id(), lam_node, nullptr);
         m_l_internalized_stack.push_back(q);
-        m_trail_stack.push_ptr(&m_mk_lambda_trail);
+        m_trail_stack.push_back(&m_mk_lambda_trail);
         bool_var bv = get_bool_var(fa);
         assign(literal(bv, false), nullptr);
         mark_as_relevant(bv);
@@ -935,7 +935,6 @@ namespace smt {
         m_lit_scores[0].reserve(v + 1);
         m_lit_scores[1].reserve(v + 1);
         m_lit_scores[0][v] = m_lit_scores[1][v] = 0.0;
-        m_birthdate.reserve(v+1);
 
         literal l(v, false);
         literal not_l(v, true);
@@ -959,7 +958,7 @@ namespace smt {
             m_activity[v]      = 0.0;
         m_case_split_queue->mk_var_eh(v);
         m_b_internalized_stack.push_back(n);
-        m_trail_stack.push_ptr(&m_mk_bool_var_trail);
+        m_trail_stack.push_back(&m_mk_bool_var_trail);
         m_stats.m_num_mk_bool_var++;
         SASSERT(check_bool_var_vector_sizes());
         return v;
@@ -1010,8 +1009,7 @@ namespace smt {
             CTRACE(cached_generation, generation != m_generation,
                    tout << "cached_generation: #" << n->get_id() << " " << generation << " " << m_generation << "\n";);
         }
-        enode *e = enode::mk(m, get_region(), m_app2enode, n, generation, suppress_args, merge_tf, m_scope_lvl,
-                             cgc_enabled, true);
+        enode * e           = enode::mk(m, m_region, m_app2enode, n, generation, suppress_args, merge_tf, m_scope_lvl, cgc_enabled, true);
         TRACE(mk_enode_detail, tout << "e.get_num_args() = " << e->get_num_args() << "\n";);
         if (m.is_unique_value(n))
             e->mark_as_interpreted();
@@ -1019,7 +1017,7 @@ namespace smt {
         TRACE(generation, tout << "mk_enode: " << id << " " << generation << "\n";);
         m_app2enode.setx(id, e, nullptr);
         m_e_internalized_stack.push_back(n);
-        m_trail_stack.push_ptr(&m_mk_enode_trail);
+        m_trail_stack.push_back(&m_mk_enode_trail);
         m_enodes.push_back(e);
         if (e->get_num_args() > 0) {
             if (e->is_true_eq()) {
@@ -1165,6 +1163,7 @@ namespace smt {
                     simp_lits.push_back(~curr);
                 }
                 break; // ignore literal                
+                // fall through
             case l_undef:
                 if (curr == ~prev)
                     return false; // clause is equivalent to true
@@ -1607,7 +1606,7 @@ namespace smt {
         if (root_gate)
             new_lits.push_back(m.mk_not(root_gate));
         SASSERT(num_lits > 1);
-        expr * fact        = m.mk_or(new_lits);
+        expr * fact        = m.mk_or(new_lits.size(), new_lits.data());
         return m.mk_def_axiom(fact);
         
     }
@@ -1658,7 +1657,8 @@ namespace smt {
                 proof * def = mk_clause_def_axiom(num_lits, lits, m.get_fact(pr));
                 TRACE(gate_clause, tout << mk_ll_pp(def, m) << "\n";
                       tout << mk_ll_pp(pr, m););
-                pr  = m.mk_unit_resolution({ def, pr });
+                proof * prs[2] = { def, pr };
+                pr  = m.mk_unit_resolution(2, prs);
             }
             mk_clause(num_lits, lits, mk_justification(justification_proof_wrapper(*this, pr)));
         }
@@ -1861,11 +1861,11 @@ namespace smt {
         if (old_v == null_theory_var) {
             enode * r     = n->get_root();
             theory_var v2 = r->get_th_var(th_id);
-            n->add_th_var(v, th_id, get_region());
+            n->add_th_var(v, th_id, m_region);
             push_trail(add_th_var_trail(n, th_id));
             if (v2 == null_theory_var) {
                 if (r != n)
-                    r->add_th_var(v, th_id, get_region());
+                    r->add_th_var(v, th_id, m_region);
                 push_new_th_diseqs(r, v, th);
             }
             else if (r != n) {

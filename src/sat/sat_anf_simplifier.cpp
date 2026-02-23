@@ -258,9 +258,8 @@ namespace sat {
     }
 
     void anf_simplifier::set_relevant(solver::bin_clause const& b) {
-        auto [l1, l2] = b;
-        set_relevant(l1); 
-        set_relevant(l2);
+        set_relevant(b.first); 
+        set_relevant(b.second);
     }
 
     void anf_simplifier::set_relevant(clause const& c) {
@@ -273,8 +272,7 @@ namespace sat {
     }
 
     bool anf_simplifier::is_pre_satisfied(solver::bin_clause const& b) {
-        auto [l1, l2] = b;
-        return phase_is_true(l1) || phase_is_true(l2);
+        return phase_is_true(b.first) || phase_is_true(b.second);
     }
     
     bool anf_simplifier::phase_is_true(literal l) {
@@ -288,8 +286,7 @@ namespace sat {
     }
 
     bool anf_simplifier::has_relevant_var(solver::bin_clause const& b) {
-        auto [l1, l2] = b;
-        return is_relevant(l1) || is_relevant(l2);
+        return is_relevant(b.first) || is_relevant(b.second);
     }
 
     /**
@@ -313,9 +310,8 @@ namespace sat {
     }
 
     static solver::bin_clause normalize(solver::bin_clause const& b) {
-        auto [l1, l2] = b;
-        if (l1.index() > l2.index()) {
-            return solver::bin_clause(l2, l1);
+        if (b.first.index() > b.second.index()) {
+            return solver::bin_clause(b.second, b.first);
         }
         else {
             return b;
@@ -372,10 +368,7 @@ namespace sat {
         for (unsigned i = 0; i < nv; ++i) id2var[var2id[i]] = i;
         for (unsigned i = 0; i < nv; ++i) vl[i] = std::make_pair(i, var2id[i]);
         std::sort(vl.begin(), vl.end());
-        for (unsigned i = 0; i < nv; ++i) {
-            auto [level, varid] = vl[i];
-            l2v[i] = id2var[varid];
-        }
+        for (unsigned i = 0; i < nv; ++i) l2v[i] = id2var[vl[i].second];
 
         ps.get_manager().reset(l2v);
 
@@ -394,11 +387,10 @@ namespace sat {
 #define lit2pdd(_l_) (_l_.sign() ? ~m.mk_var(_l_.var()) : m.mk_var(_l_.var()))
 
     void anf_simplifier::add_bin(solver::bin_clause const& b, pdd_solver& ps) {
-        auto [l1, l2] = b;
         auto& m = ps.get_manager();
-        dd::pdd p = (lit2pdd(l1) | lit2pdd(l2)) ^ true;
+        dd::pdd p = (lit2pdd(b.first) | lit2pdd(b.second)) ^ true;
         ps.add(p);
-        TRACE(anf_simplifier, tout << "bin: " << l1 << " " << l2 << " : " << p << "\n";);
+        TRACE(anf_simplifier, tout << "bin: " << b.first << " " << b.second << " : " << p << "\n";);
     }
 
     void anf_simplifier::add_clause(clause const& c, pdd_solver& ps) {

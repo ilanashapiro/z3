@@ -232,9 +232,8 @@ namespace euf {
     th_explain::th_explain(unsigned n_lits, sat::literal const* lits, unsigned n_eqs, enode_pair const* eqs, sat::literal c, enode_pair const& p, th_proof_hint const* pma) {
         m_consequent = c;
         m_eq = p;
-        auto& [n1, n2] = m_eq;
-        if (n1 && n1->get_id() > n2->get_id())
-            std::swap(n1, n2);
+        if (m_eq.first && m_eq.first->get_id() > m_eq.second->get_id())
+            std::swap(m_eq.first, m_eq.second);
         m_proof_hint = pma;
         m_num_literals = n_lits;
         m_num_eqs = n_eqs;
@@ -247,9 +246,8 @@ namespace euf {
         m_eqs = reinterpret_cast<enode_pair*>(base_ptr);
         for (i = 0; i < n_eqs; ++i) {
             m_eqs[i] = eqs[i];
-            auto& [n1, n2] = m_eqs[i];
-            if (n1->get_id() > n2->get_id())
-                std::swap(n1, n2);
+            if (m_eqs[i].first->get_id() > m_eqs[i].second->get_id())
+                std::swap(m_eqs[i].first, m_eqs[i].second);
         }
     }
 
@@ -305,13 +303,12 @@ namespace euf {
     std::ostream& th_explain::display(std::ostream& out) const {
         for (auto lit : euf::th_explain::lits(*this))
             out << lit << " ";
-        for (auto [n1, n2] : euf::th_explain::eqs(*this))
-            out << n1->get_expr_id() << " == " << n2->get_expr_id() << " ";
+        for (auto eq : euf::th_explain::eqs(*this))
+            out << eq.first->get_expr_id() << " == " << eq.second->get_expr_id() << " ";
         if (m_consequent != sat::null_literal)
             out << "--> " << m_consequent;
-        auto [n1, n2] = m_eq;
-        if (n1 != nullptr)
-            out << "--> " << n1->get_expr_id() << " == " << n2->get_expr_id();
+        if (m_eq.first != nullptr)
+            out << "--> " << m_eq.first->get_expr_id() << " == " << m_eq.second->get_expr_id();
         if (m_proof_hint != nullptr)
             out << " p ";
         return out;

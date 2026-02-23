@@ -78,9 +78,9 @@ unsigned nlz_core(unsigned x) {
 /**
    \brief Return the number of leading zero bits in data (a number of sz words).
 */
-unsigned nlz(std::span<unsigned const> data) {
+unsigned nlz(unsigned sz, unsigned const * data) {
     unsigned r = 0;
-    auto i = data.size();
+    unsigned i = sz;
     while (i > 0) {
         --i;
         unsigned d = data[i];
@@ -111,9 +111,9 @@ unsigned ntz_core(unsigned x) {
 /**
    \brief Return the number of trailing zero bits in data (a number of sz words).
 */
-unsigned ntz(std::span<unsigned const> data) {
+unsigned ntz(unsigned sz, unsigned const * data) {
     unsigned r = 0;
-    for (unsigned i = 0; i < data.size(); ++i) {
+    for (unsigned i = 0; i < sz; ++i) {
         unsigned d = data[i];
         if (d == 0)
             r += 32;
@@ -126,14 +126,13 @@ unsigned ntz(std::span<unsigned const> data) {
 /**
    \brief dst <- src
    
-   Truncate if src.size() > dst.size().
-   Fill range [src.size(), dst.size()) of dst with zeros if dst.size() > src.size().
+   Truncate if src_sz > dst_sz.
+   Fill range [src_sz, dst_sz) of dst with zeros if dst_sz > src_sz.
 */
-void copy(std::span<unsigned const> src, std::span<unsigned> dst) {
-    auto src_sz = src.size();
-    auto dst_sz = dst.size();
+void copy(unsigned src_sz, unsigned const * src, 
+          unsigned dst_sz, unsigned * dst) {
     if (dst_sz >= src_sz) {
-        size_t i;
+        unsigned i;
         for (i = 0; i < src_sz; ++i) 
             dst[i] = src[i];
         for (; i < dst_sz; ++i) 
@@ -149,8 +148,8 @@ void copy(std::span<unsigned const> src, std::span<unsigned> dst) {
 /**
    \brief Return true if all words of data are zero.
 */
-bool is_zero(std::span<unsigned const> data) {
-    for (unsigned i = 0; i < data.size(); ++i) 
+bool is_zero(unsigned sz, unsigned const * data) {
+    for (unsigned i = 0; i < sz; ++i) 
         if (data[i])
             return false;
     return true;
@@ -159,30 +158,29 @@ bool is_zero(std::span<unsigned const> data) {
 /**
    \brief Set all words of data to zero.
 */
-void reset(std::span<unsigned> data) {
-    for (unsigned i = 0; i < data.size(); ++i)
+void reset(unsigned sz, unsigned * data) {
+    for (unsigned i = 0; i < sz; ++i)
         data[i] = 0;
 }
 
 /**
    \brief dst <- src << k
    Store in dst the result of shifting src k bits to the left.
-   The result is truncated by dst.size().
+   The result is truncated by dst_sz.
 
-   \pre !src.empty()
-   \pre !dst.empty()
+   \pre src_sz != 0
+   \pre dst_sz != 0
 */
-void shl(std::span<unsigned const> src, unsigned k, std::span<unsigned> dst) {
-    size_t src_sz = src.size();
-    size_t dst_sz = dst.size();
+void shl(unsigned src_sz, unsigned const * src, unsigned k, 
+         unsigned dst_sz, unsigned * dst) {
     SASSERT(src_sz != 0);
     SASSERT(dst_sz != 0);
     SASSERT(k != 0);
     unsigned word_shift  = k / (8 * sizeof(unsigned));
     unsigned bit_shift   = k % (8 * sizeof(unsigned));
     if (word_shift > 0) {
-        size_t j = src_sz;
-        size_t i = src_sz + word_shift;
+        unsigned j = src_sz;
+        unsigned i = src_sz + word_shift;
         if (i > dst_sz) {
             if (j >= i - dst_sz)
                 j -= (i - dst_sz); 
@@ -191,7 +189,7 @@ void shl(std::span<unsigned const> src, unsigned k, std::span<unsigned> dst) {
             i  = dst_sz;
         }
         else if (i < dst_sz) {
-            for (size_t r = i; r < dst_sz; ++r)
+            for (unsigned r = i; r < dst_sz; ++r)
                 dst[r] = 0;
         }
         while (j > 0) {
@@ -218,7 +216,7 @@ void shl(std::span<unsigned const> src, unsigned k, std::span<unsigned> dst) {
         unsigned prev       = 0;
         if (src_sz > dst_sz)
             src_sz = dst_sz;
-        for (size_t i = 0; i < src_sz; ++i) {
+        for (unsigned i = 0; i < src_sz; ++i) {
             unsigned new_prev = (src[i] >> comp_shift);
             dst[i] = src[i];
             dst[i] <<= bit_shift;
@@ -227,7 +225,7 @@ void shl(std::span<unsigned const> src, unsigned k, std::span<unsigned> dst) {
         }
         if (dst_sz > src_sz) {
             dst[src_sz] = prev;
-            for (size_t i = src_sz + 1; i < dst_sz; ++i)
+            for (unsigned i = src_sz+1; i < dst_sz; ++i)
                 dst[i] = 0;
         }
     }
@@ -237,74 +235,67 @@ void shl(std::span<unsigned const> src, unsigned k, std::span<unsigned> dst) {
    \brief dst <- src >> k
    Store in dst the result of shifting src k bits to the right.
 
-   \pre dst.size() == src.size() or both sizes can differ (handled generically)
-   \pre !src.empty()
-   \pre !dst.empty()
+   \pre dst must have size sz.
+   \pre src_sz != 0
+   \pre dst_sz != 0
 */
-void shr(std::span<unsigned const> src, unsigned k, std::span<unsigned> dst) {
-    auto src_sz = src.size();
-    auto dst_sz = dst.size();
-    auto sz = src_sz;
-    
-    // Handle the case where src and dst have the same size (original first shr function)
-    if (src_sz == dst_sz) {
-        unsigned digit_shift = k / (8 * sizeof(unsigned));
-        if (digit_shift >= sz) {
-            reset(dst);
-            return;
-        }
-        auto bit_shift   = k % (8 * sizeof(unsigned));
-        auto comp_shift  = (8 * sizeof(unsigned)) - bit_shift;
-        auto new_sz      = sz - digit_shift;
-        if (new_sz < sz) {
-            size_t i       = 0;
-            auto j       = digit_shift;
-            if (bit_shift != 0) {
-                for (; i < new_sz - 1; ++i, ++j) {
-                    dst[i] = src[j];
-                    dst[i] >>= bit_shift;
-                    dst[i] |= (src[j+1] << comp_shift);
-                }
+void shr(unsigned sz, unsigned const * src, unsigned k, unsigned * dst) {
+    unsigned digit_shift = k / (8 * sizeof(unsigned));
+    if (digit_shift >= sz) {
+        reset(sz, dst);
+        return;
+    }
+    unsigned bit_shift   = k % (8 * sizeof(unsigned));
+    unsigned comp_shift  = (8 * sizeof(unsigned)) - bit_shift;
+    unsigned new_sz      = sz - digit_shift;
+    if (new_sz < sz) {
+        unsigned i       = 0;
+        unsigned j       = digit_shift;
+        if (bit_shift != 0) {
+            for (; i < new_sz - 1; ++i, ++j) {
                 dst[i] = src[j];
                 dst[i] >>= bit_shift;
+                dst[i] |= (src[j+1] << comp_shift);
             }
-            else {
-                for (; i < new_sz; ++i, ++j) {
-                    dst[i] = src[j];
-                }
-            }
-            for (auto i = new_sz; i < sz; ++i)
-                dst[i] = 0;
-        }
-        else {
-            SASSERT(new_sz == sz);
-            SASSERT(bit_shift != 0);
-            unsigned i       = 0;
-            for (; i < new_sz - 1; ++i) {
-                dst[i] = src[i];
-                dst[i] >>= bit_shift;
-                dst[i] |= (src[i+1] << comp_shift);
-            }
-            dst[i] = src[i];
+            dst[i] = src[j];
             dst[i] >>= bit_shift;
         }
-        return;
+        else {
+            for (; i < new_sz; ++i, ++j) {
+                dst[i] = src[j];
+            }
+        }
+        for (unsigned i = new_sz; i < sz; ++i)
+            dst[i] = 0;
     }
-    
-    // Handle the case where src and dst have different sizes (original second shr function)
-    auto digit_shift = k / (8 * sizeof(unsigned));
+    else {
+        SASSERT(new_sz == sz);
+        SASSERT(bit_shift != 0);
+        unsigned i       = 0;
+        for (; i < new_sz - 1; ++i) {
+            dst[i] = src[i];
+            dst[i] >>= bit_shift;
+            dst[i] |= (src[i+1] << comp_shift);
+        }
+        dst[i] = src[i];
+        dst[i] >>= bit_shift;
+    }
+}
+
+void shr(unsigned src_sz, unsigned const * src, unsigned k, unsigned dst_sz, unsigned * dst) {
+    unsigned digit_shift = k / (8 * sizeof(unsigned));
     if (digit_shift >= src_sz) {
-        reset(dst);
+        reset(dst_sz, dst);
         return;
     }
-    auto bit_shift = k % (8 * sizeof(unsigned));
-    auto comp_shift = (8 * sizeof(unsigned)) - bit_shift;
-    auto new_sz = src_sz - digit_shift;
+    unsigned bit_shift   = k % (8 * sizeof(unsigned));
+    unsigned comp_shift  = (8 * sizeof(unsigned)) - bit_shift;
+    unsigned new_sz      = src_sz - digit_shift;
     if (digit_shift > 0) {
         unsigned i       = 0;
-        auto j = digit_shift;
+        unsigned j       = digit_shift;
         if (bit_shift != 0) {
-            auto sz = new_sz;
+            unsigned sz = new_sz;
             if (new_sz > dst_sz)
                 sz = dst_sz;
             for (; i < sz - 1; ++i, ++j) {
@@ -328,7 +319,7 @@ void shr(std::span<unsigned const> src, unsigned k, std::span<unsigned> dst) {
     else {
         SASSERT(new_sz == src_sz);
         SASSERT(bit_shift != 0);
-        auto sz = new_sz;
+        unsigned sz = new_sz;
         if (new_sz > dst_sz)
             sz = dst_sz;
         unsigned i       = 0;
@@ -342,33 +333,32 @@ void shr(std::span<unsigned const> src, unsigned k, std::span<unsigned> dst) {
         if (new_sz > dst_sz)
             dst[i] |= (src[i+1] << comp_shift);
     }
-    for (auto i = new_sz; i < dst_sz; ++i)
+    for (unsigned i = new_sz; i < dst_sz; ++i)
         dst[i] = 0;
 }
 
 /**
    \brief Return true if one of the first k bits of src is not zero.
 */
-bool has_one_at_first_k_bits(std::span<unsigned const> data, unsigned k) {
-    auto sz = data.size();
+bool has_one_at_first_k_bits(unsigned sz, unsigned const * data, unsigned k) {
     SASSERT(sz != 0);
-    auto word_sz = k / (8 * sizeof(unsigned));
+    unsigned word_sz = k / (8 * sizeof(unsigned));
     if (word_sz > sz)
         word_sz = sz;
-    for (size_t i = 0; i < word_sz; ++i) {
+    for (unsigned i = 0; i < word_sz; ++i) {
         if (data[i] != 0)
             return true;
     }
     if (word_sz < sz) {
-        auto bit_sz = k % (8 * sizeof(unsigned));
-        auto mask = (1u << bit_sz) - 1;
+        unsigned bit_sz  = k % (8 * sizeof(unsigned));
+        unsigned mask    = (1u << bit_sz) - 1;
         return (data[word_sz] & mask) != 0;
     }
     return false;
 }
 
-bool inc(std::span<unsigned> data) {
-    for (size_t i = 0; i < data.size(); ++i) {
+bool inc(unsigned sz, unsigned * data) {
+    for (unsigned i = 0; i < sz; ++i) {
         data[i]++;
         if (data[i] != 0)
             return true; // no overflow
@@ -376,8 +366,8 @@ bool inc(std::span<unsigned> data) {
     return false; // overflow
 }
 
-bool dec(std::span<unsigned> data) {
-    for (size_t i = 0; i < data.size(); ++i) {
+bool dec(unsigned sz, unsigned * data) {
+    for (unsigned i = 0; i < sz; ++i) {
         data[i]--;
         if (data[i] != UINT_MAX)
             return true; // no underflow
@@ -385,9 +375,8 @@ bool dec(std::span<unsigned> data) {
     return false; // underflow
 }
 
-bool lt(std::span<unsigned> data1, std::span<unsigned> data2) {
-    auto sz = data1.size();
-    auto i = sz;
+bool lt(unsigned sz, unsigned * data1, unsigned * data2) {
+    unsigned i = sz;
     while (i > 0) {
         --i;
         if (data1[i] < data2[i])
@@ -398,10 +387,9 @@ bool lt(std::span<unsigned> data1, std::span<unsigned> data2) {
     return false;
 }
 
-bool add(std::span<unsigned const> a, std::span<unsigned const> b, std::span<unsigned> c) {
-    auto sz = a.size();
+bool add(unsigned sz, unsigned const * a, unsigned const * b, unsigned * c) {
     unsigned k = 0;
-    for (size_t j = 0; j < sz; ++j) {
+    for (unsigned j = 0; j < sz; ++j) {
         unsigned r = a[j] + b[j]; 
         bool c1 = r < a[j];
         c[j] = r + k;    

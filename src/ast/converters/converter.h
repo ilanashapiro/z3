@@ -23,8 +23,9 @@ Notes:
 #include "ast/ast_translation.h"
 
 class converter {
-    unsigned m_ref_count = 0;
+    unsigned m_ref_count;
 public:
+    converter():m_ref_count(0) {}
     virtual ~converter() = default;
 
     void inc_ref() { ++m_ref_count;  }

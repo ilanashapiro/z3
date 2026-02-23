@@ -78,8 +78,7 @@ def ehash(v):
 
     """
     if z3_debug():
-        if not is_expr(v):
-            raise ValueError(f"ehash expects a Z3 expression, got {type(v)}")
+        assert is_expr(v)
 
     return "{}_{}_{}".format(str(v), v.hash(), v.sort_kind())
 

@@ -65,12 +65,10 @@ void sym_mux::ensure_capacity(sym_mux_entry &entry, unsigned sz) const {
     }
 }
 
-std::optional<unsigned> sym_mux::find_idx(func_decl * sym) const {
+bool sym_mux::find_idx(func_decl * sym, unsigned & idx) const {
     std::pair<sym_mux_entry *, unsigned> entry;
-    if (m_muxes.find(sym, entry)) {
-        return entry.second;
-    }
-    return std::nullopt;
+    if (m_muxes.find(sym, entry)) {idx = entry.second; return true;}
+    return false;
 }
 
 func_decl * sym_mux::find_by_decl(func_decl* fdecl, unsigned idx) const {
@@ -103,10 +101,10 @@ struct formula_checker {
         if (m_found || !is_app(e)) { return; }
 
         func_decl * sym = to_app(e)->get_decl();
-        auto sym_idx = m_parent.find_idx(sym);
-        if (!sym_idx) { return; }
+        unsigned sym_idx;
+        if (!m_parent.find_idx(sym, sym_idx)) { return; }
 
-        bool have_idx = *sym_idx == m_idx;
+        bool have_idx = sym_idx == m_idx;
         m_found = !have_idx;
     }
 

@@ -352,7 +352,7 @@ public:
                 expr_ref_vector args(m);
                 args.push_back(::mk_not(m, a));
                 args.append(to_app(t)->get_num_args(), to_app(t)->get_args());
-                assert_expr_core(m.mk_or(args));
+                assert_expr_core(m.mk_or(args.size(), args.data()));
             }
             else {
                 m_is_cnf = false;

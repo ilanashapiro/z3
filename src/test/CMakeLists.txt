@@ -11,7 +11,6 @@ foreach (component ${z3_test_expanded_deps})
 endforeach()
 add_executable(test-z3
   EXCLUDE_FROM_ALL
-  ackermannize.cpp
   algebraic.cpp
   algebraic_numbers.cpp
   api_ast_map.cpp
@@ -56,8 +55,6 @@ add_executable(test-z3
   expr_substitution.cpp
   ext_numeral.cpp
   f2n.cpp
-  finite_set.cpp
-  finite_set_rewriter.cpp
   factor_rewriter.cpp
   finder.cpp
   fixed_bit_vector.cpp

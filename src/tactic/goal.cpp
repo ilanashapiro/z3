@@ -441,7 +441,7 @@ void goal::display_as_and(std::ostream & out) const {
     for (unsigned i = 0; i < sz; ++i)
         args.push_back(form(i));
     expr_ref tmp(m());
-    tmp = m().mk_and(std::span<expr* const>(args.data(), args.size()));
+    tmp = m().mk_and(args.size(), args.data());
     out << mk_ismt2_pp(tmp, m()) << "\n";
 }
 
@@ -549,8 +549,10 @@ void goal::elim_redundancies() {
                 continue;
             if (pos_lits.is_marked(atom)) {
                 proof * p = nullptr;
-                if (proofs_enabled())
-                    p = m().mk_unit_resolution({ pr(get_idx(atom)), pr(i) });
+                if (proofs_enabled()) {
+                    proof * prs[2] = { pr(get_idx(atom)), pr(i) };
+                    p = m().mk_unit_resolution(2, prs);
+                }
                 expr_dependency_ref d(m());
                 if (unsat_core_enabled())
                     d = m().mk_join(dep(get_idx(atom)), dep(i));
@@ -564,8 +566,10 @@ void goal::elim_redundancies() {
                 continue;
             if (neg_lits.is_marked(f)) {
                 proof * p = nullptr;
-                if (proofs_enabled())
-                    p = m().mk_unit_resolution({ pr(get_not_idx(f)), pr(i) });
+                if (proofs_enabled()) {
+                    proof * prs[2] = { pr(get_not_idx(f)), pr(i) };
+                    p = m().mk_unit_resolution(2, prs);
+                }
                 expr_dependency_ref d(m());
                 if (unsat_core_enabled())
                     d = m().mk_join(dep(get_not_idx(f)), dep(i));

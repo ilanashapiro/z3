@@ -152,7 +152,7 @@ namespace smt {
         for (expr * e : universe) {
             eqs.push_back(m.mk_eq(sk, e));
         }
-        expr_ref fml(m.mk_or(eqs), m);
+        expr_ref fml(m.mk_or(eqs.size(), eqs.data()), m);
         m_aux_context->assert_expr(fml);
     }
 
@@ -319,7 +319,7 @@ namespace smt {
             diseqs.push_back(m.mk_not(m.mk_eq(sk, sk_value)));
         }
         expr_ref blocking_clause(m);
-        blocking_clause = m.mk_or(diseqs);
+        blocking_clause = m.mk_or(diseqs.size(), diseqs.data());
         TRACE(model_checker, tout << "blocking clause:\n" << mk_ismt2_pp(blocking_clause, m) << "\n";);
         m_aux_context->assert_expr(blocking_clause);
         return true;

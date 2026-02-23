@@ -72,7 +72,6 @@ namespace sat {
             double   m_reward = 0;
             double   m_last_reward = 0;
             unsigned m_make_count = 0;
-            uint64_t m_timestamp = 0;
             int      m_bias = 0;
             ema      m_reward_avg = 1e-5;
         };
@@ -226,6 +225,8 @@ namespace sat {
 
         ddfw() {}
 
+        ~ddfw() = default;
+
         void set_plugin(local_search_plugin* p) { m_plugin = p; }
 
         lbool check(unsigned sz, literal const* assumptions);
@@ -281,8 +282,6 @@ namespace sat {
         double get_reward_avg(bool_var v) const { return m_vars[v].m_reward_avg; }
 
         inline int& bias(bool_var v) { return m_vars[v].m_bias; }
-
-        uint64_t timestamp(bool_var v) { return m_vars[v].m_timestamp; }
 
         void reserve_vars(unsigned n);
         

@@ -221,14 +221,13 @@ int main(int argc, char ** argv) {
     TST(upolynomial);
     TST(algebraic);
     TST(algebraic_numbers);
-    TST(ackermannize);
     TST(monomial_bounds);
     TST(nla_intervals);
     TST(horner);
     TST(prime_generator);
     TST(permutation);
     TST(nlsat);
-    TST(13);
+    TST(nlsat_mv);
     TST(zstring);
     if (test_all) return 0;
     TST(ext_numeral);
@@ -285,6 +284,4 @@ int main(int argc, char ** argv) {
     TST(scoped_vector);
     TST(sls_seq_plugin);
     TST(ho_matcher);
-    TST(finite_set);
-    TST(finite_set_rewriter);
 }

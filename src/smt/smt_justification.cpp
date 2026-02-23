@@ -281,7 +281,7 @@ namespace smt {
         if (lits.size() == 1)
             return m.mk_th_lemma(m_th_id, lits.get(0), 0, nullptr, m_params.size(), m_params.data());
         else
-            return m.mk_th_lemma(m_th_id, m.mk_or(lits), 0, nullptr, m_params.size(), m_params.data());
+            return m.mk_th_lemma(m_th_id, m.mk_or(lits.size(), lits.data()), 0, nullptr, m_params.size(), m_params.data());
     }
 
     proof * theory_propagation_justification::mk_proof(conflict_resolution & cr) {
@@ -321,26 +321,26 @@ namespace smt {
         region& r = ctx.get_region();
         m_eqs = new (r) enode_pair[num_eqs];
         std::uninitialized_copy(eqs, eqs + num_eqs, m_eqs);
-        DEBUG_CODE(
+        DEBUG_CODE({
             for (unsigned i = 0; i < num_eqs; ++i) {
                 SASSERT(eqs[i].first->get_root() == eqs[i].second->get_root());
             }
-        );
+        });
     }
 
     void ext_simple_justification::get_antecedents(conflict_resolution & cr) {
         simple_justification::get_antecedents(cr);
         for (unsigned i = 0; i < m_num_eqs; ++i) {
-            auto const& [n1, n2] = m_eqs[i];
-            cr.mark_eq(n1, n2);
+            enode_pair const & p = m_eqs[i];
+            cr.mark_eq(p.first, p.second);
         }
     }
 
     bool ext_simple_justification::antecedent2proof(conflict_resolution & cr, ptr_buffer<proof> & result) {
         bool visited = simple_justification::antecedent2proof(cr, result);
         for (unsigned i = 0; i < m_num_eqs; ++i) {
-            auto const& [n1, n2] = m_eqs[i];
-            proof * pr = cr.get_proof(n1, n2);
+            enode_pair const & p = m_eqs[i];
+            proof * pr = cr.get_proof(p.first, p.second);
             if (pr == nullptr)
                 visited = false;
             else
@@ -351,9 +351,8 @@ namespace smt {
 
     proof * ext_theory_propagation_justification::mk_proof(conflict_resolution & cr) {
         ptr_buffer<proof> prs;
-        if (!antecedent2proof(cr, prs)) {
+        if (!antecedent2proof(cr, prs))
             return nullptr;
-        }
         context & ctx = cr.get_context();
         ast_manager & m = cr.get_manager();
         expr_ref fact(m);
@@ -437,7 +436,7 @@ namespace smt {
         if (lits.size() == 1)
             return m.mk_th_lemma(m_th_id, lits.get(0), 0, nullptr, m_params.size(), m_params.data());
         else
-            return m.mk_th_lemma(m_th_id, m.mk_or(lits), 0, nullptr, m_params.size(), m_params.data());
+            return m.mk_th_lemma(m_th_id, m.mk_or(lits.size(), lits.data()), 0, nullptr, m_params.size(), m_params.data());
     }
 
 };

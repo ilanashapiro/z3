@@ -18,7 +18,6 @@ Revision History:
 --*/
 #pragma once
 #include "math/lp/lp_types.h"
-#include "math/lp/lp_utils.h"
 namespace lp  {
 
 
@@ -31,11 +30,11 @@ public:
     ext_var_info() = default;
     ext_var_info(unsigned j): ext_var_info(j, true) {}
     ext_var_info(unsigned j , bool is_int) : m_external_j(j), m_is_integer(is_int) {}
-    ext_var_info(unsigned j , bool is_int, const std::string& name) : m_external_j(j), m_is_integer(is_int), m_name(name) {}
+    ext_var_info(unsigned j , bool is_int, std::string name) : m_external_j(j), m_is_integer(is_int), m_name(name) {}
     
     unsigned external_j() const { return m_external_j;}
     bool is_integer() const {return m_is_integer;}
-    void set_name(const std::string& name) { m_name = name; }
+    void set_name(std::string name) { m_name = name; }
     std::string get_name() const { return m_name; }
 };
 
@@ -44,7 +43,7 @@ class var_register {
     std::unordered_map<unsigned, unsigned> m_external_to_local;
 public:
     
-    void set_name(unsigned j, const std::string& name) {
+    void set_name(unsigned j, std::string name) {
         m_local_to_external[j].set_name(name);
     }
 
@@ -54,8 +53,9 @@ public:
 
     unsigned add_var(unsigned user_var, bool is_int) {
         if (user_var != UINT_MAX) {
-            if (auto local = try_get_value(m_external_to_local, user_var)) {
-                return *local;
+            auto t = m_external_to_local.find(user_var);
+            if (t != m_external_to_local.end()) {
+                return t->second;
             }
         }
         
@@ -96,26 +96,29 @@ public:
     }
 
     bool external_is_used(unsigned ext_j) const {
-        return try_get_value(m_external_to_local, ext_j).has_value();
+        auto it = m_external_to_local.find(ext_j);
+        return it != m_external_to_local.end();
     }
 
     bool external_is_used(unsigned ext_j, unsigned & local_j ) const {
-        if (auto local = try_get_value(m_external_to_local, ext_j)) {
-            local_j = *local;
-            return true;
+        auto it = m_external_to_local.find(ext_j);
+        if ( it == m_external_to_local.end()) {
+            local_j = UINT_MAX;
+            return false;
         }
-        local_j = UINT_MAX;
-        return false;
+        local_j = it->second;
+        return true;
     }
 
     bool external_is_used(unsigned ext_j, unsigned & local_j, bool & is_int ) const {
-        if (auto local = try_get_value(m_external_to_local, ext_j)) {
-            local_j = *local;
-            is_int = m_local_to_external[local_j].is_integer();
-            return true;
+        auto it = m_external_to_local.find(ext_j);
+        if ( it == m_external_to_local.end()){
+            local_j = UINT_MAX;
+            return false;
         }
-        local_j = UINT_MAX;
-        return false;
+        local_j = it->second;
+        is_int = m_local_to_external[local_j].is_integer();
+        return true;
     }
 
     bool has_int_var() const {

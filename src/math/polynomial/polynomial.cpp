@@ -168,7 +168,7 @@ namespace polynomial {
         }
     public:
         static unsigned hash_core(unsigned sz, power const * pws) {
-            return string_hash(std::string_view(reinterpret_cast<char*>(const_cast<power*>(pws)), sz*sizeof(power)), 11);
+            return string_hash(reinterpret_cast<char*>(const_cast<power*>(pws)), sz*sizeof(power), 11);
         }
 
         struct hash_proc {
@@ -2129,11 +2129,12 @@ namespace polynomial {
                 for (unsigned i = 0; i < sz; ++i) {
                     monomial * m = m_tmp_ms[i];
                     unsigned pos = m_m2pos.get(m);
-                    new_as.push_back(std::move(m_tmp_as[pos]));
+                    new_as.push_back(numeral());
+                    swap(new_as.back(), m_tmp_as[pos]);
                     m_m2pos.reset(m);
                     m_m2pos.set(m, i);
                 }
-                m_tmp_as = std::move(new_as);
+                m_tmp_as.swap(new_as);
             }
 
             // For each monomial m
@@ -4390,12 +4391,9 @@ namespace polynomial {
         // select a new random value in GF(p) that is not in vals, and store it in r
         void peek_fresh(scoped_numeral_vector const & vals, unsigned p, scoped_numeral & r) {
             SASSERT(vals.size() < p); // otherwise we can't keep the fresh value
-            SASSERT(m().modular()); // ensure we're in modular mode
             auto sz = vals.size();
             while (true) {
                 m().set(r, rand() % p);
-                m().p_normalize(r.get()); // normalize the value to ensure it's in the correct range
-                SASSERT(m().is_p_normalized(r)); // verify normalization succeeded
                 // check if fresh value...
                 unsigned k = 0;
                 for (; k < sz; ++k) {

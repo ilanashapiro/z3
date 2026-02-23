@@ -22,6 +22,9 @@ Revision History:
 
 class s_integer {
     int m_val = 0;
+    static s_integer m_zero;
+    static s_integer m_one;
+    static s_integer m_minus_one;
 public:
 
     unsigned hash() const { 
@@ -31,11 +34,19 @@ public:
     struct hash_proc {  unsigned operator()(s_integer const& r) const { return r.hash(); }  };
     struct eq_proc { bool operator()(s_integer const& r1, s_integer const& r2) const { return r1 == r2; } };
 
+    void swap(s_integer & n) noexcept {
+        std::swap(m_val, n.m_val);
+    }
+
     std::string to_string() const;
 
 public:
     s_integer() = default;
     explicit s_integer(int n):m_val(n) {}
+    struct i64 {};
+    explicit s_integer(int64_t i, i64):m_val(static_cast<int>(i)) {}
+    struct ui64 {};
+    explicit s_integer(uint64_t i, ui64):m_val(static_cast<int>(i)) {}
     explicit s_integer(const char * str);
     explicit s_integer(const rational & r):m_val(static_cast<int>(r.get_int64())) {}
 
@@ -51,12 +62,12 @@ public:
     uint64_t get_uint64() const { return m_val; }
     static bool is_unsigned() { return true; }
     unsigned get_unsigned() const { return static_cast<unsigned>(m_val); }
-    s_integer get_s_integer() const { return *this; }
-    s_integer get_infinitesimal() const { return s_integer(0); }
+    s_integer const& get_s_integer() const { return *this; }
+    s_integer const& get_infinitesimal() const { return zero(); }
     static bool is_rational() { return true; }
     s_integer const& get_rational() const { return *this; } 
     friend inline s_integer numerator(const s_integer & r) { return r; }
-    friend inline s_integer denominator(const s_integer & r) { return s_integer(1); }
+    friend inline s_integer denominator(const s_integer & r) { return one(); }
     s_integer & operator+=(const s_integer & r) { m_val += r.m_val; return *this; }
     s_integer & operator-=(const s_integer & r) { m_val -= r.m_val; return *this; }
     s_integer & operator*=(const s_integer & r) { m_val *= r.m_val; return *this; }
@@ -96,6 +107,9 @@ public:
         return result;
     }
 
+    static const s_integer & zero() { return m_zero; }
+    static const s_integer & one() { return m_one; }
+    static const s_integer & minus_one() { return m_minus_one; }
     // Perform:  this += c * k
     void addmul(const s_integer & c, const s_integer & k) { m_val += c.m_val * k.m_val; }
     void submul(const s_integer & c, const s_integer & k) { m_val -= c.m_val * k.m_val; }
@@ -127,3 +141,5 @@ inline s_integer abs(const s_integer & r) {
     }
     return result;
 }
+
+

@@ -66,7 +66,7 @@ namespace smt {
         m_progress_callback(nullptr),
         m_next_progress_sample(0),
         m_clause_proof(*this),
-        m_fingerprints(m, get_region()),
+        m_fingerprints(m, m_region),
         m_b_internalized_stack(m),
         m_e_internalized_stack(m),
         m_l_internalized_stack(m),
@@ -97,11 +97,6 @@ namespace smt {
             m_fparams.m_relevancy_lemma = false;
 
         m_model_generator->set_context(this);
-
-        IF_VERBOSE(0,
-            verbose_stream() << "USING RANDOM SEED: "
-                            << m_fparams.m_random_seed << "\n";
-        );
     }
 
     /**
@@ -125,9 +120,6 @@ namespace smt {
         if (!m_setup.already_configured()) {
             m_fparams.updt_params(p);
         }
-        for (auto th : m_theory_set)
-            if (th)
-                th->updt_params();
     }
 
     unsigned context::relevancy_lvl() const {
@@ -293,13 +285,8 @@ namespace smt {
             if (!decision && d.m_phase == l.sign())
                 m_agility         += (1.0 - m_fparams.m_agility_factor);
         }
-        bool new_phase = !l.sign();
-        m_stats.m_num_assignments++;
-        if (d.m_phase_available && d.m_phase != new_phase)
-            m_birthdate[l.var()] = m_stats.m_num_assignments; // reset birthdate when phase changes
         d.m_phase_available        = true;
-        d.m_phase = new_phase;
-
+        d.m_phase                  = !l.sign();
         TRACE(assign_core, tout << (decision?"decision: ":"propagating: ") << l << " ";
               display_literal_smt2(tout, l) << "\n";
               tout << "relevant: " << is_relevant_core(l) << " level: " << m_scope_lvl << " is atom " << d.is_atom() << "\n";
@@ -810,7 +797,7 @@ namespace smt {
                 }
                 else {
                     // uncommon case: r2 will have two theory_vars attached to it.
-                    r2->add_th_var(v1, t1, get_region());
+                    r2->add_th_var(v1, t1, m_region);
                     push_new_th_diseqs(r2, v1, get_theory(t1));
                     push_new_th_diseqs(r1, v2, get_theory(t2));
                 }
@@ -861,7 +848,7 @@ namespace smt {
                 theory_var v2 = r2->get_th_var(t1);
                 TRACE(merge_theory_vars, tout << get_theory(t1)->get_name() << ": " << v2 << " == " << v1 << "\n");
                 if (v2 == null_theory_var) {
-                    r2->add_th_var(v1, t1, get_region());
+                    r2->add_th_var(v1, t1, m_region);
                     push_new_th_diseqs(r2, v1, get_theory(t1));
                 }
                 l1 = l1->get_next();
@@ -1536,24 +1523,16 @@ namespace smt {
     }
 
     lbool context::find_assignment(expr * n) const {
-
+        if (m.is_false(n))
+            return l_false;
         expr* arg = nullptr;
         if (m.is_not(n, arg)) {
-
             if (b_internalized(arg))
                 return ~get_assignment_core(arg);
-            if (m.is_false(arg))
-                return l_true;
-            if (m.is_true(arg))
-                return l_false;
             return l_undef;
         }
         if (b_internalized(n))
             return get_assignment(n);
-        if (m.is_false(n))
-            return l_false;
-        if (m.is_true(n))
-            return l_true;
         return l_undef;
     }
 
@@ -1959,13 +1938,13 @@ namespace smt {
 
         m_scope_lvl++;
         m_region.push_scope();
-        get_trail_stack().push_scope();
         m_scopes.push_back(scope());
         scope & s = m_scopes.back();
         // TRACE(context, tout << "push " << m_scope_lvl << "\n";);
 
         m_relevancy_propagator->push();
         s.m_assigned_literals_lim    = m_assigned_literals.size();
+        s.m_trail_stack_lim          = m_trail_stack.size();
         s.m_aux_clauses_lim          = m_aux_clauses.size();
         s.m_justifications_lim       = m_justifications.size();
         s.m_units_to_reassert_lim    = m_units_to_reassert.size();
@@ -1981,6 +1960,12 @@ namespace smt {
         CASSERT("context", check_invariant());
     }
 
+    /**
+       \brief Execute generic undo-objects.
+    */
+    void context::undo_trail_stack(unsigned old_size) {
+        ::undo_trail_stack(m_trail_stack, old_size);
+    }
 
     /**
        \brief Remove watch literal idx from the given clause.
@@ -2423,7 +2408,7 @@ namespace smt {
        \warning This method will not invoke reset_cache_generation.
     */
     unsigned context::pop_scope_core(unsigned num_scopes) {
-        unsigned units_to_reassert_lim = 0;
+        unsigned units_to_reassert_lim;
 
         try {
             if (m.has_trace_stream() && !m_is_auxiliary)
@@ -2467,25 +2452,23 @@ namespace smt {
             m_relevancy_propagator->pop(num_scopes);
 
             m_fingerprints.pop_scope(num_scopes);
-
-
-
             unassign_vars(s.m_assigned_literals_lim);
-            m_trail_stack.pop_scope(num_scopes);
+            undo_trail_stack(s.m_trail_stack_lim);
 
             for (theory* th : m_theory_set) 
                 th->pop_scope_eh(num_scopes);
+
             del_justifications(m_justifications, s.m_justifications_lim);
+
             m_asserted_formulas.pop_scope(num_scopes);
 
             CTRACE(propagate_atoms, !m_atom_propagation_queue.empty(), tout << m_atom_propagation_queue << "\n";);
 
-
             m_eq_propagation_queue.reset();
             m_th_eq_propagation_queue.reset();
-            m_region.pop_scope(num_scopes);
             m_th_diseq_propagation_queue.reset();
             m_atom_propagation_queue.reset();
+            m_region.pop_scope(num_scopes);
             m_scopes.shrink(new_lvl);
             m_conflict_resolution->reset();
 
@@ -2562,7 +2545,7 @@ namespace smt {
                 break;
             case l_true:
                 is_taut = true;
-                Z3_fallthrough;
+                // fallthrough
             case l_undef:
                 if (i != j) {
                     cls.swap_lits(i, j);
@@ -3073,7 +3056,7 @@ namespace smt {
         del_clauses(m_lemmas, 0);
         del_justifications(m_justifications, 0);
         reset_tmp_clauses();
-        m_trail_stack.reset();
+        undo_trail_stack(0);
         m_qmanager = nullptr;
         if (m_is_diseq_tmp) {
             m_is_diseq_tmp->del_eh(m, false);
@@ -3353,15 +3336,16 @@ namespace smt {
     }
 
     void context::reset_tmp_clauses() {
-        for (auto& [clausep, lits] : m_tmp_clauses) {
-            if (clausep) del_clause(false, clausep);
+        for (auto& p : m_tmp_clauses) {
+            if (p.first) del_clause(false, p.first);
         }
         m_tmp_clauses.reset();
     }
 
     lbool context::decide_clause() {
         if (m_tmp_clauses.empty()) return l_true;
-        for (auto & [clausep, lits] : m_tmp_clauses) {
+        for (auto & tmp_clause : m_tmp_clauses) {
+            literal_vector& lits = tmp_clause.second;
             literal unassigned = null_literal;
             for (literal l : lits) {
                 switch (get_assignment(l)) {
@@ -3385,7 +3369,7 @@ namespace smt {
                 set_conflict(b_justification(), ~lits[0]);
             }
             else {
-                set_conflict(b_justification(clausep), null_literal);
+                set_conflict(b_justification(tmp_clause.first), null_literal);
             }
             VERIFY(!resolve_conflict());
             return l_false;
@@ -3413,9 +3397,11 @@ namespace smt {
             push_scope();
             vector<std::pair<expr*,expr_ref>> asm2proxy;
             internalize_proxies(asms, asm2proxy);
-            for (auto const& [orig_assumption, curr_assumption] : asm2proxy) {
+            for (auto const& p: asm2proxy) {
                 if (inconsistent())
                     break;
+                expr_ref curr_assumption = p.second;
+                expr* orig_assumption = p.first;
                 if (m.is_true(curr_assumption)) continue;
                 SASSERT(is_valid_assumption(m, curr_assumption));
                 proof * pr = m.mk_asserted(curr_assumption);

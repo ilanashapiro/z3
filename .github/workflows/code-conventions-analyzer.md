@@ -1,26 +1,21 @@
 ---
 description: Analyzes Z3 codebase for consistent coding conventions and opportunities to use modern C++ features
 on:
-  schedule: daily
+  schedule: weekly
   workflow_dispatch:
 permissions: read-all
 tools:
-  cache-memory: true
   github:
     toolsets: [default]
   view: {}
+  grep: {}
   glob: {}
-  edit: {}
   bash:
     - "clang-format --version"
     - "git log:*"
     - "git diff:*"
     - "git show:*"
 safe-outputs:
-  create-issue:
-    title-prefix: "[Conventions] "
-    labels: [code-quality, automated]
-    max: 5
   create-discussion:
     title-prefix: "Code Conventions Analysis"
     category: "Agentic Workflows"
@@ -37,195 +32,10 @@ You are an expert C++ code quality analyst specializing in the Z3 theorem prover
 
 ## Your Task
 
-**PRIMARY FOCUS: Create Issues for initializer_list Refactoring**
-
-Your primary task is to identify and implement refactorings that use `std::initializer_list<T>` instead of array pointer + size parameters:
-
-1. **Find array + size parameter patterns** - Functions taking `(unsigned sz, T* args)` or similar
-2. **Implement the refactoring** - Replace with `std::initializer_list<T>` for cleaner APIs
-3. **Create issues** - Automatically create an issue with your changes for initializer_list improvements
-
-**Focus Areas for initializer_list Refactoring:**
-- Functions with `unsigned sz/size/num, T* const* args` parameter pairs
-- Call sites that create temporary arrays of constant length just to pass to these functions
-- Internal APIs where changing the signature is safe and beneficial
-- Functions where the size is always small and known at compile time
-
-**Example refactoring:**
-```cpp
-// Before: Array + size parameters
-R foo(unsigned sz, T const* args) {
-    for (unsigned i = 0; i < sz; ++i) {
-        use(args[i]);
-    }
-}
-
-// Call site before:
-T args1[2] = {1, 2};
-foo(2, args1);
-
-// After: Using initializer_list
-R foo(std::initializer_list<T> const& args) {
-    for (auto const& arg : args) {
-        use(arg);
-    }
-}
-
-// Call site after:
-foo({1, 2});
-```
-
-**Additional Task:**
-Additionally, conduct analysis of other coding conventions and modern C++ opportunities for discussion (not immediate implementation)
-
-
-## Workflow for initializer_list Refactoring (PRIMARY)
-
-### Step A: Find initializer_list Refactoring Opportunities
-
-1. **Search for common patterns** that should use `std::initializer_list`:
-   ```bash
-   # Functions with unsigned + pointer parameter pairs (generic pattern)
-   grep pattern: "unsigned.*(sz|size|num|n).*\*" glob: "src/**/*.h"
-   
-   # Specific patterns like mk_ functions with sz + args
-   grep pattern: "mk_[a-z_]+\(unsigned.*\*" glob: "src/**/*.h"
-   
-   # Function declarations with sz/size/num + pointer (more specific, matches both single and double pointers)
-   grep pattern: "\\(unsigned (sz|size|num|n)[^,)]*,\\s*\\w+\\s*\\*(\\s*const)?\\s*\\*?" glob: "src/**/*.h"
-   ```
-
-2. **Analyze candidates** for refactoring:
-   - Use `view` to examine the function implementation
-   - Check call sites to see if they use temporary arrays
-   - Verify that the function is internal (not part of public C API)
-   - Ensure the array size is typically small and known at compile time
-   - Confirm that changing to initializer_list would simplify call sites
-
-3. **Select 1-2 high-value targets** per run:
-   - Prefer internal helper functions over widely-used APIs
-   - Choose functions where call sites create temporary arrays
-   - Focus on functions that would benefit from simpler call syntax
-
-### Step B: Implement the Refactoring
-
-For each selected function:
-
-1. **Update the function signature** in header file:
-   ```cpp
-   // Before:
-   R foo(unsigned sz, T const* args);
-   // or
-   R foo(unsigned sz, T* const* args);
-   
-   // After:
-   R foo(std::initializer_list<T> const& args);
-   ```
-
-2. **Update the function implementation**:
-   ```cpp
-   // Before:
-   R foo(unsigned sz, T const* args) {
-       for (unsigned i = 0; i < sz; ++i) {
-           process(args[i]);
-       }
-   }
-   
-   // After:
-   R foo(std::initializer_list<T> const& args) {
-       for (auto const& arg : args) {
-           process(arg);
-       }
-   }
-   // Or access size with args.size() if needed
-   ```
-
-3. **Update all call sites** to use the new API:
-   ```cpp
-   // Before:
-   T args1[2] = {1, 2};
-   foo(2, args1);
-   
-   // After:
-   foo({1, 2});
-   ```
-
-4. **Add necessary includes**:
-   - Add `#include <initializer_list>` to header file if not already present
-
-5. **Verify the changes**:
-   - Use `grep` to find any remaining call sites with the old pattern
-   - Check that the refactoring is complete
-   - Ensure no compilation errors would occur
-
-### Step C: Create the Issue
-
-Use the `output.create-issue` tool to create an issue with:
-- **Title**: "Refactor [function_name] to use std::initializer_list"
-- **Description**: 
-  - Explain what was changed
-  - Why initializer_list is better (cleaner call sites, type safety)
-  - List all modified files
-  - Note any caveats or considerations
-
-**Example issue description:**
-```markdown
-# Refactor to use std::initializer_list
-
-This PR refactors the following functions to use `std::initializer_list<T>` instead of array pointer + size parameters:
-
-- `mk_and(unsigned sz, expr* const* args)` in `src/ast/some_file.cpp`
-- `mk_or(unsigned sz, expr* const* args)` in `src/ast/another_file.cpp`
-
-## Benefits:
-- Cleaner call sites: `mk_and({a, b, c})` instead of creating temporary arrays
-- Type safety: Size is implicit, no mismatch possible
-- Modern C++ idiom (std::initializer_list is C++11)
-- Compile-time size verification
-
-## Changes:
-- Updated function signatures to take `std::initializer_list<T> const&`
-- Modified implementations to use range-based for loops or `.size()`
-- Updated all call sites to use brace-initialization
-- Added `#include <initializer_list>` where needed
-
-## Testing:
-- No functional changes to logic
-- All existing call sites updated
-
-## Considerations:
-- Only applied to internal functions where call sites typically use small, fixed-size arrays
-- Public C API functions were not modified to maintain compatibility
-```
-
-### Step D: Create Discussion for Other Findings
-
-If you identify other code quality issues, create a **discussion** with those findings.
-
-## Step 1: Initialize or Resume Progress (Cache Memory)
-
-**Check your cache memory for:**
-- List of code quality issues previously identified
-- Current progress through the codebase analysis
-- Any recommendations or work items from previous runs
-
-**Critical - Re-verify All Cached Issues:**
-
-Before including any previously cached issue in your report, you **MUST**:
-
-1. **Re-verify each cached issue** against the current codebase
-2. **Check if the issue has been resolved** since the last run:
-   - Use `grep`, `glob`, `view`, or `bash` to inspect the relevant code
-   - Check git history with `git log` to see if the files were updated
-   - Verify that the pattern or issue still exists
-3. **Categorize each cached issue** as:
-   - ✅ **RESOLVED**: Code has been updated and issue no longer exists
-   - 🔄 **IN PROGRESS**: Partial fixes have been applied
-   - ❌ **UNRESOLVED**: Issue still exists unchanged
-4. **Remove resolved issues** from your cache and report
-5. **Update partially resolved issues** with current state
-
-**Important:** If this is your first run or memory is empty, initialize a new tracking structure. Focus on systematic coverage of the codebase over multiple runs rather than attempting to analyze everything at once.
+Conduct a comprehensive analysis of the Z3 codebase to identify:
+1. **Coding convention inconsistencies** across the codebase
+2. **Opportunities to use modern C++ features** that would simplify code
+3. **Common patterns** that could be improved or standardized
 
 ## Analysis Areas
 
@@ -275,7 +85,9 @@ Z3 uses C++20 (as specified in `.clang-format`). Look for opportunities to use:
 - In-class member initializers
 
 **C++17 features:**
+- Structured bindings for tuple/pair unpacking
 - `if constexpr` for compile-time conditionals
+- `std::optional` instead of pointer-based optional values
 - `std::string_view` for string parameters
 - Fold expressions for variadic templates
 - `[[nodiscard]]` and `[[maybe_unused]]` attributes
@@ -286,7 +98,6 @@ Z3 uses C++20 (as specified in `.clang-format`). Look for opportunities to use:
 - Three-way comparison operator (`<=>`)
 - Ranges library
 - Coroutines (if beneficial)
-- `std::format` for string formatting (replace stringstream for exceptions)
 
 ### 3. Common Library Function Usage
 
@@ -335,23 +146,6 @@ Identify opportunities specific to Z3's architecture and coding patterns:
 - Redundant AST creation calls (rebuilding same expression multiple times)
 - Opportunities to cache and reuse AST node references
 - Use of temporaries instead of repeated construction
-- **Nested API calls with non-deterministic argument evaluation**
-  - Detect expressions where multiple arguments to an API call are themselves API calls
-  - C++ does **not guarantee evaluation order of function arguments**, which can lead to:
-    - Platform-dependent performance differences
-    - Unintended allocation or reference-counting patterns
-    - Hard-to-reproduce profiling results
-  - Prefer storing intermediate results in temporaries to enforce evaluation order and improve clarity
-  - Example:
-    ```cpp
-    // Avoid
-    auto* v = m.mk_and(m.mk_or(a, b), m.mk_or(c, d));
-
-    // Prefer
-    auto* o1 = m.mk_or(a, b);
-    auto* o2 = m.mk_or(c, d);
-    auto* v  = m.mk_and(o1, o2);
-    ```
 
 **Hash Table Operations:**
 - Double hash lookups (check existence + insert/retrieve)
@@ -368,12 +162,10 @@ Identify opportunities specific to Z3's architecture and coding patterns:
 - Incorrect usage of `std::move` (moving from const references, etc.)
 - Return value optimization opportunities being blocked
 
-**Exception String Construction:**
-- Using `stringstream` to build exception messages
-- Unnecessary string copies when raising exceptions
-- Replace with `std::format` for cleaner, more efficient code
-- Constant arguments should be merged into the string
-- Use `std::formatter` to avoid creating temporary strings
+**Optional Value Patterns:**
+- Functions returning null + using output parameters
+- Replace with `std::optional<T>` return values
+- Cleaner API that avoids pointer/reference output parameters
 
 **Bitfield Opportunities:**
 - Structs with multiple boolean flags
@@ -392,14 +184,8 @@ Identify opportunities specific to Z3's architecture and coding patterns:
 
 **Exception Control Flow:**
 - Using exceptions for normal control flow
-- Alternatives: `std::expected`, error codes
+- Alternatives: `std::expected`, `std::optional`, error codes
 - Performance and clarity improvements
-
-**Inefficient Stream Output:**
-- Using strings to output single characters, such as << "X",
-  as well as using multiple consecutive constant strings such as << "Foo" << "Bar".
-- Alternatives: << 'X'  and << "Foo" "Bar"
-- Performance improvement and binary size reduction
 
 ## Analysis Methodology
 
@@ -411,16 +197,8 @@ Identify opportunities specific to Z3's architecture and coding patterns:
    - `src/api/` - Public API surface
    - `src/tactic/` - Tactics and simplifiers (good for m_imp pattern analysis)
    - Use `glob` to find representative source files
-   - **Prioritize areas** not yet analyzed (check cache memory)
 
-2. **Re-verify previously identified issues** (if any exist in cache):
-   - For each cached issue, check current code state
-   - Use `git log` to see recent changes to relevant files
-   - Verify with `grep`, `glob`, or `view` that the issue still exists
-   - Mark issues as resolved, in-progress, or unresolved
-   - Only include unresolved issues in the new report
-
-3. **Use code search tools** effectively:
+2. **Use code search tools** effectively:
    - `grep` with patterns to find specific code constructs
    - `glob` to identify file groups for analysis
    - `view` to examine specific files in detail
@@ -433,30 +211,21 @@ Identify opportunities specific to Z3's architecture and coding patterns:
        - bugprone-* (selected high-signal checks)
        - performance-* (selected)
 
-4. **Identify patterns** by examining multiple files:
+3. **Identify patterns** by examining multiple files:
    - Look at 10-15 representative files per major area
    - Note common patterns vs inconsistencies
    - Check both header (.h) and implementation (.cpp) files
    - Use `sizeof` and field alignment to analyze struct sizes
 
-5. **Quantify findings**:
+4. **Quantify findings**:
    - Count occurrences of specific patterns
    - Identify which areas are most affected
    - Prioritize findings by impact and prevalence
    - Measure potential size savings for memory layout optimizations
 
-## Deliverables
+## Deliverable: Detailed Analysis Discussion
 
-### PRIMARY: Issues for Code Refactoring
-
-When you implement refactorings (initializer_list), create issues using `output.create-issue` with:
-- Clear title indicating what was refactored
-- Description of changes and benefits
-- List of modified files and functions
-
-### SECONDARY: Detailed Analysis Discussion
-
-For other code quality findings, create a comprehensive discussion with your findings structured as follows:
+Create a comprehensive discussion with your findings structured as follows:
 
 ### Discussion Title
 "Code Conventions Analysis - [Date] - [Key Finding Summary]"
@@ -473,62 +242,31 @@ For other code quality findings, create a comprehensive discussion with your fin
 
 [Brief overview of key findings - 2-3 sentences]
 
-## Progress Tracking Summary
-
-**This section tracks work items across multiple runs:**
-
-### Previously Identified Issues - Status Update
-
-**✅ RESOLVED Issues** (since last run):
-- [List issues from cache that have been resolved, with brief description]
-- [Include file references and what changed]
-- [Note: Only include if re-verification confirms resolution]
-- If none: "No previously identified issues have been resolved since the last run"
-
-**🔄 IN PROGRESS Issues** (partial fixes applied):
-- [List issues where some improvements have been made but work remains]
-- [Show what's been done and what's left]
-- If none: "No issues are currently in progress"
-
-**❌ UNRESOLVED Issues** (still present):
-- [Brief list of issues that remain from previous runs]
-- [Will be detailed in sections below]
-- If none or first run: "This is the first analysis run" or "All previous issues resolved"
-
-### New Issues Identified in This Run
-
-[Count of new issues found in this analysis]
-
 ## 1. Coding Convention Consistency Findings
 
 ### 1.1 Naming Conventions
 - **Current State**: [What you observed]
 - **Inconsistencies Found**: [List specific examples with file:line references]
-- **Status**: [New / Previously Identified - Unresolved]
 - **Recommendation**: [Suggested standard to adopt]
 
 ### 1.2 Code Formatting
 - **Alignment with .clang-format**: [Assessment]
 - **Common Deviations**: [List patterns that deviate from style guide]
-- **Status**: [New / Previously Identified - Unresolved]
 - **Files Needing Attention**: [List specific files or patterns]
 
 ### 1.3 Documentation Style
 - **Current Practices**: [Observed documentation patterns]
 - **Inconsistencies**: [Examples of different documentation approaches]
-- **Status**: [New / Previously Identified - Unresolved]
 - **Recommendation**: [Suggested documentation standard]
 
 ### 1.4 Include Patterns
 - **Header Guard Usage**: `#pragma once` vs traditional guards
 - **Include Order**: [Observed patterns]
-- **Status**: [New / Previously Identified - Unresolved]
 - **Recommendations**: [Suggested improvements]
 
 ### 1.5 Error Handling
 - **Current Approaches**: [Exception usage, return codes, assertions]
 - **Consistency Assessment**: [Are patterns consistent across modules?]
-- **Status**: [New / Previously Identified - Unresolved]
 - **Recommendations**: [Suggested standards]
 
 ## 2. Modern C++ Feature Opportunities
@@ -539,7 +277,6 @@ For each opportunity, provide:
 - **Modern Alternative**: [How it could be improved]
 - **Impact**: [Benefits: readability, safety, performance]
 - **Example Locations**: [File:line references]
-- **Status**: [New / Previously Identified - Unresolved]
 - **Estimated Effort**: [Low/Medium/High]
 
 ### 2.1 C++11/14 Features
@@ -549,7 +286,6 @@ For each opportunity, provide:
 - **Modern**: `[improved code example]`
 - **Benefit**: [Why this is better]
 - **Prevalence**: Found in [number] locations
-- **Status**: [New / Previously Identified - Unresolved]
 
 [Repeat for each opportunity]
 
@@ -660,10 +396,10 @@ For each opportunity, provide:
 - **Bitfield Opportunities**: [Structs with bool flags or small integers]
 - **Estimated Savings**: [Total size reduction across codebase]
 
-### 4.4 AST Creation Efficiency and Determinism
+### 4.4 AST Creation Efficiency
 - **Redundant Creation**: [Examples of rebuilding same expression multiple times]
-- **Temporary Usage**: [Places where temporaries could be cached and order of creation determinized]
-- **Impact**: [Performance improvement potential and determinism across platforms]
+- **Temporary Usage**: [Places where temporaries could be cached]
+- **Impact**: [Performance improvement potential]
 
 ### 4.5 Hash Table Operation Optimization
 - **Double Lookups**: [Check existence + insert/get patterns]
@@ -681,86 +417,28 @@ For each opportunity, provide:
 - **Incorrect std::move**: [Move from const, unnecessary moves]
 - **Return Value Optimization**: [Places where RVO is blocked]
 
-### 4.8 Exception String Construction
-- **Current**: [stringstream usage for building exception messages]
-- **Modern**: [std::format and std::formater opportunities]
-- **String Copies**: [Unnecessary copies when raising exceptions]
-- **Examples**: [Specific exception construction sites]
+### 4.8 Optional Value Pattern Modernization
+- **Current Pattern**: [Functions returning null + output parameters]
+- **Modern Pattern**: [std::optional<T> return value opportunities]
+- **API Improvements**: [Specific function signatures to update]
+- **Examples**: [File:line references with before/after]
 
-### 4.9 Array Parameter Modernization (std::span)
-- **Current**: [Pointer + size parameter pairs for runtime-sized arrays]
+### 4.9 Array Parameter Modernization
+- **Current**: [Pointer + size parameter pairs]
 - **Modern**: [std::span usage opportunities]
 - **Type Safety**: [How span improves API safety]
 - **Examples**: [Function signatures to update]
 
-### 4.10 Array Parameter Modernization (std::initializer_list) - **IMPLEMENT AS ISSUE**
-
-**This is the PRIMARY focus area - implement these changes directly:**
-
-- **Current Pattern**: Functions with `unsigned sz, T* args` or `unsigned sz, T* const* args` parameters
-- **Modern Pattern**: Use `std::initializer_list<T>` for functions called with compile-time constant arrays
-- **Benefits**: 
-  - Cleaner call sites: `foo({1, 2, 3})` instead of creating temporary arrays
-  - No size/pointer mismatch possible
-  - Type safety with implicit size
-  - More readable and concise
-- **Action**: Find and refactor array + size parameter patterns:
-  1. Search for functions with `unsigned sz/size/num` + pointer parameters
-  2. Identify functions where call sites use temporary arrays of constant size
-  3. Refactor to use `std::initializer_list<T> const&`
-  4. Create an issue with changes
-- **Example Pattern**:
-  ```cpp
-  // Before: Array + size parameters
-  R foo(unsigned sz, T const* args) {
-      for (unsigned i = 0; i < sz; ++i) {
-          process(args[i]);
-      }
-  }
-  
-  // Call site before:
-  T args1[2] = {1, 2};
-  foo(2, args1);
-  
-  // After: Using initializer_list
-  R foo(std::initializer_list<T> const& args) {
-      for (auto const& arg : args) {
-          process(arg);
-      }
-  }
-  
-  // Call site after:
-  foo({1, 2});
-  ```
-- **Search Patterns**: Look for:
-  - Function signatures with `unsigned sz/size/num/n` followed by pointer parameter
-  - Common Z3 patterns like `mk_and(unsigned sz, expr* const* args)`
-  - Internal helper functions (not public C API)
-  - Functions where typical call sites use small, fixed arrays
-- **Candidates**: Functions that:
-  - Are called with temporary arrays created at call site
-  - Have small, compile-time known array sizes
-  - Are internal APIs (not part of public C interface)
-  - Would benefit from simpler call syntax
-- **Output**: Issue with refactored code
-- **Note**: Only apply to internal C++ APIs, not to public C API functions that need C compatibility
-
-### 4.11 Increment Operator Patterns
+### 4.10 Increment Operator Patterns
 - **Postfix Usage**: [Count of i++ where result is unused]
 - **Prefix Preference**: [Places to use ++i instead]
 - **Iterator Loops**: [Heavy iterator usage areas]
 
-### 4.12 Exception Control Flow
+### 4.11 Exception Control Flow
 - **Current Usage**: [Exceptions used for normal control flow]
-- **Modern Alternatives**: [std::expected or error codes]
+- **Modern Alternatives**: [std::expected, std::optional, error codes]
 - **Performance**: [Impact of exception-based control flow]
 - **Refactoring Opportunities**: [Specific patterns to replace]
-
-### 4.13 Inefficient Stream Output
-- **Current Usage**: [string stream output operator used for single characters]
-- **Modern Alternatives**: [use char output operator]
-- **Performance**: [Reduce code size and improve performance]
-- **Refactoring Opportunities**: [<< "X"]
 
 ## 5. Priority Recommendations
 
@@ -808,51 +486,10 @@ Provide 3-5 concrete examples of recommended refactorings:
 - **Source directories covered**: [list]
 - **Lines of code reviewed**: ~[estimate]
 - **Pattern occurrences counted**: [key patterns with counts]
-- **Issues resolved since last run**: [number]
-- **New issues identified**: [number]
-- **Total unresolved issues**: [number]
 ```
-
-## Step 2: Update Cache Memory After Analysis
-
-After completing your analysis and creating the discussion, **update your cache memory** with:
-
-1. **Remove resolved issues** from the cache:
-   - Delete any issues that have been verified as resolved
-   - Do not carry forward stale information
-
-2. **Store only unresolved issues** for next run:
-   - Each issue should include:
-     - Description of the issue
-     - File locations (paths and line numbers if applicable)
-     - Pattern or code example
-     - Recommendation for fix
-     - Date last verified
-
-3. **Track analysis progress**:
-   - Which directories/areas have been analyzed
-   - Which analysis categories have been covered
-   - Percentage of codebase examined
-   - Next areas to focus on
-
-4. **Store summary statistics**:
-   - Total issues identified (cumulative)
-   - Total issues resolved
-   - Current unresolved count
-   - Analysis run count
-
-**Critical:** Keep your cache clean and current. The cache should only contain:
-- Unresolved issues verified in the current run
-- Areas not yet analyzed
-- Progress tracking information
-
-Do NOT perpetuate resolved issues in the cache. Always verify before storing.
 
 ## Important Guidelines
 
-- **Track progress across runs**: Use cache memory to maintain state between runs
-- **Always re-verify cached issues**: Check that previously identified issues still exist before reporting them
-- **Report resolved work items**: Acknowledge when issues have been fixed to show progress
 - **Be thorough but focused**: Examine a representative sample, not every file
 - **Provide specific examples**: Always include file paths and line numbers
 - **Balance idealism with pragmatism**: Consider the effort required for changes
@@ -868,9 +505,8 @@ Do NOT perpetuate resolved issues in the cache. Always verify before storing.
 - **Quantify when possible**: Use numbers to show prevalence of patterns
 - **Consider backward compatibility**: Z3 is a mature project with many users
 - **Measure size improvements**: Use `static_assert` and `sizeof` to verify memory layout optimizations
-- **Prioritize safety**: Smart pointers and `std::span` improve type safety
+- **Prioritize safety**: Smart pointers, `std::optional`, and `std::span` improve type safety
 - **Consider performance**: Hash table optimizations and AST caching have measurable impact
-- **Keep cache current**: Remove resolved issues from cache, only store verified unresolved items
 
 ## Code Search Examples
 
@@ -997,21 +633,6 @@ grep pattern: "bool.*\(.*\*.*\)|bool.*\(.*&" glob: "src/**/*.h"
 grep pattern: "\([^,]+\*[^,]*,\s*size_t|, unsigned.*size\)" glob: "src/**/*.h"
 ```
 
-**Find array + size parameters (initializer_list opportunities):**
-```
-# Functions with unsigned sz/size/num + pointer parameter pairs (matches both single and double pointers)
-grep pattern: "\\(unsigned (sz|size|num|n)[^,)]*,\\s*\\w+\\s*\\*(\\s*const)?\\s*\\*?" glob: "src/**/*.h"
-
-# Common Z3 patterns like mk_ functions
-grep pattern: "mk_[a-z_]+\(unsigned.*\*" glob: "src/**/*.h"
-
-# Function declarations with size + pointer combinations (broader pattern)
-grep pattern: "unsigned.*(sz|size|num|n).*\*" glob: "src/**/*.h"
-
-# Call sites creating temporary arrays
-grep pattern: "\w+\s+\w+\[[0-9]+\]\s*=\s*\{.*\};" glob: "src/**/*.cpp"
-```
-
 **Find postfix increment:**
 ```
 grep pattern: "[a-z_]+\+\+\s*[;\)]" glob: "src/**/*.cpp"
@@ -1029,33 +650,17 @@ grep pattern: "try.*\{.*for\(|try.*\{.*while\(" glob: "src/**/*.cpp"
 grep pattern: "catch.*continue|catch.*break" glob: "src/**/*.cpp"
 ```
 
-**Find inefficient output string operations using constant strings:**
-```
-grep pattern: "<<\s*\".\"" glob: "src/**/*.cpp"
-grep pattern: "<<\s*\".*\"\s*<<\s*\".*\"" glob: "src/**/*.cpp"
-```
-
 ## Security and Safety
 
 - Never execute untrusted code
-- Use `bash` only for safe operations (git, grep patterns)
-- **For code refactoring (initializer_list)**: Use the `edit` tool to modify files directly
-- **For other findings**: Create discussions only (no code modifications)
-- All code changes will be reviewed through the issue process
+- Use `bash` only for safe read-only operations (git, grep patterns)
+- Don't modify any files (this is an analysis-only workflow)
+- Focus on identifying issues, not fixing them (fixes can be done in follow-up PRs)
 
 ## Output Requirements
 
-**Two types of outputs:**
-
-1. **Issue** (for refactorings like initializer_list):
-   - Use `output.create-issue` to create an issue
-   - Include clear title and description
-   - List all modified files
-   - Explain the refactoring and its benefits
-
-2. **Discussion** (for other code quality findings):
-   - Create exactly ONE comprehensive discussion with all findings
-   - Use the structured format above
-   - Include specific file references for all examples
-   - Provide actionable recommendations
+- Create exactly ONE comprehensive discussion with all findings
+- Use the structured format above
+- Include specific file references for all examples
+- Provide actionable recommendations
 - Previous discussions created by this workflow will be automatically closed (using `close-older-discussions: true`)

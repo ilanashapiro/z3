@@ -17,7 +17,6 @@ Revision History:
 
 --*/
 #include<sstream>
-#include<format>
 
 #include "ast/ast_pp.h"
 #include "ast/array_decl_plugin.h"
@@ -53,7 +52,9 @@ namespace datalog {
         if (low <= val && val <= up) {
             return true;
         }
-        m_manager->raise_exception(std::format("{}, value is not within bound {} <= {} <= {}", msg, low, val, up));
+        std::ostringstream buffer;
+        buffer << msg << ", value is not within bound " << low << " <= " << val << " <= " << up;
+        m_manager->raise_exception(buffer.str());
         return false;
     }
 
@@ -659,7 +660,8 @@ namespace datalog {
 
     app* dl_decl_util::mk_numeral(uint64_t value, sort* s) {
         if (is_finite_sort(s)) {
-            if (auto sz = try_get_size(s); sz.has_value() && *sz <= value) {
+            uint64_t sz = 0;
+            if (try_get_size(s, sz) && sz <= value) {
                 m.raise_exception("value is out of bounds");
             }
             parameter params[2] = { parameter(rational(value, rational::ui64())), parameter(s) };
@@ -757,12 +759,13 @@ namespace datalog {
         return m.mk_sort(get_family_id(), DL_FINITE_SORT, 2, params);
     }
 
-    std::optional<uint64_t> dl_decl_util::try_get_size(const sort * s) const {
+    bool dl_decl_util::try_get_size(const sort * s, uint64_t& size) const {
         sort_size sz = s->get_info()->get_num_elements();
         if (sz.is_finite()) {
-            return sz.size();
+            size = sz.size();
+            return true;
         }
-        return std::nullopt;
+        return false;
     }
 
     app* dl_decl_util::mk_lt(expr* a, expr* b) {

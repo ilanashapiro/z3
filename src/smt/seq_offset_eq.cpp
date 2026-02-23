@@ -94,17 +94,15 @@ void seq_offset_eq::prop_arith_to_len_offset() {
     }
 }
 
-std::optional<int> seq_offset_eq::find(enode* n1, enode* n2) const {
+bool seq_offset_eq::find(enode* n1, enode* n2, int& offset) const {
     n1 = n1->get_root();
     n2 = n2->get_root();
     if (n1->get_owner_id() > n2->get_owner_id()) 
         std::swap(n1, n2);
-    if (a.is_numeral(n1->get_expr()) || a.is_numeral(n2->get_expr()))
-        return std::nullopt;
-    int offset;
-    if (m_offset_equalities.find(n1, n2, offset))
-        return offset;
-    return std::nullopt;
+    return 
+        !a.is_numeral(n1->get_expr()) && 
+        !a.is_numeral(n2->get_expr()) && 
+        m_offset_equalities.find(n1, n2, offset);
 }
 
 bool seq_offset_eq::contains(enode* r) {

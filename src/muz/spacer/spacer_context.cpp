@@ -1969,7 +1969,8 @@ void pred_transformer::update_solver_with_rfs(prop_solver *solver,
             e = m.mk_or(m.mk_not(rule_tag), rf->get(), rf->tag());
         }
         else {
-            e = m.mk_or(not_rule_tag, last_tag, rf->get(), rf->tag());
+            expr *args[4] = { not_rule_tag, last_tag, rf->get(), rf->tag() };
+            e = m.mk_or(4, args);
         }
         last_tag = m.mk_not(rf->tag());
         pm.formula_n2o(e.get(), e, pos);
@@ -2591,7 +2592,7 @@ bool context::validate() {
                 for (unsigned j = utsz; j < tsz; ++j) {
                     fmls.push_back(r.get_tail(j));
                 }
-                tmp = m.mk_and(fmls);
+                tmp = m.mk_and(fmls.size(), fmls.data());
                 svector<symbol> names;
                 expr_free_vars fv;
                 fv (tmp);
@@ -4226,7 +4227,7 @@ bool context::check_invariant(unsigned lvl, func_decl* fn)
     if (m.is_true(inv)) { return true; }
     pt.add_premises(m_rels, lvl, conj);
     conj.push_back(m.mk_not(inv));
-    expr_ref fml(m.mk_and(conj), m);
+    expr_ref fml(m.mk_and(conj.size(), conj.data()), m);
     ctx->assert_expr(fml);
     lbool result = ctx->check_sat(0, nullptr);
     TRACE(spacer, tout << "Check invariant level: " << lvl << " " << result

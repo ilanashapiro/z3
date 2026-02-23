@@ -620,7 +620,7 @@ namespace smt {
 
     template<typename Ext>
     bool theory_dense_diff_logic<Ext>::check_matrix() const {
-        int sz = static_cast<int>(m_matrix.size());
+        int sz = m_matrix.size();
         for (theory_var i = 0; i < sz; ++i) {
             for (theory_var j = 0; j < sz; ++j) {
                 cell const & c = m_matrix[i][j];
@@ -1093,7 +1093,7 @@ namespace smt {
         else {
             // 
             expr_ref_vector const& core = m_objective_assignments[v];
-            f = m.mk_and(core);
+            f = m.mk_and(core.size(), core.data());
             if (is_strict) {
                 f = m.mk_not(f);
             }
@@ -1109,7 +1109,7 @@ namespace smt {
             }
             else {
                 expr_ref_vector const& core = m_objective_assignments[v];
-                f = m.mk_and(core);
+                f = m.mk_and(core.size(), core.data());
             }
         }
         else {

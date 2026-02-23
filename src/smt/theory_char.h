@@ -20,7 +20,6 @@ Author:
 #include "ast/rewriter/bit_blaster/bit_blaster.h"
 #include "model/char_factory.h"
 #include "smt/smt_theory.h"
-#include <optional>
 
 namespace smt {
 
@@ -50,7 +49,7 @@ namespace smt {
         expr_ref_vector const& get_ebits(theory_var v);
         bool has_bits(theory_var v) const;
         void init_bits(theory_var v);
-        std::optional<unsigned> get_char_value(theory_var v) const;        
+        bool get_char_value(theory_var v, unsigned& c);        
         void enforce_ackerman(theory_var v, theory_var w);
         void enforce_value_bound(theory_var v);
         void enforce_bits();

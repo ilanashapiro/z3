@@ -142,8 +142,7 @@ class Numeral:
         >>> Numeral("2/3").denominator()
         3
         """
-        if not self.is_rational():
-            raise Z3Exception("denominator() requires a rational numeral")
+        assert(self.is_rational())
         return Numeral(Z3_get_denominator(self.ctx_ref(), self.as_ast()), self.ctx)
 
     def numerator(self):
@@ -152,8 +151,7 @@ class Numeral:
         >>> Numeral("2/3").numerator()
         2
         """
-        if not self.is_rational():
-            raise Z3Exception("numerator() requires a rational numeral")
+        assert(self.is_rational())
         return Numeral(Z3_get_numerator(self.ctx_ref(), self.as_ast()), self.ctx)
 
     def is_irrational(self):
@@ -172,8 +170,7 @@ class Numeral:
         """ Return a numeral (that is an integer) as a Python long.
 
         """
-        if not self.is_integer():
-            raise Z3Exception("as_long() requires an integer numeral")
+        assert(self.is_integer())
         if sys.version_info.major >= 3:
             return int(Z3_get_numeral_string(self.ctx_ref(), self.as_ast()))
         else:
@@ -184,8 +181,7 @@ class Numeral:
         >>> Numeral("1/5").as_fraction()
         Fraction(1, 5)
         """
-        if not self.is_rational():
-            raise Z3Exception("as_fraction() requires a rational numeral")
+        assert(self.is_rational())
         return Fraction(self.numerator().as_long(), self.denominator().as_long())
 
     def approx(self, precision=10):

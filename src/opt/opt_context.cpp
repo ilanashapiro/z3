@@ -744,12 +744,11 @@ namespace opt {
         for (unsigned i = 0; i < m_objectives.size(); ++i) {
             objective const& obj = m_objectives[i];
             display_objective(out, obj);
-            auto [lower, upper] = b[i];
             if (obj.m_type == O_MAXIMIZE) {
-                out << " |-> [" << lower << ":" << upper << "]\n";
+                out << " |-> [" << b[i].first << ":" << b[i].second << "]\n";
             }
             else {
-                out << " |-> [" << -upper << ":" << -lower << "]\n";
+                out << " |-> [" << -b[i].second << ":" << -b[i].first << "]\n";
             }
         }        
     }
@@ -999,7 +998,7 @@ namespace opt {
             else if (is_objective(r->form(i)))
                 fmls.push_back(r->form(i));
             else
-                fmls.push_back(m.mk_implies(mk_and(m, deps), r->form(i)));
+                fmls.push_back(m.mk_implies(mk_and(m, deps.size(), deps.data()), r->form(i)));
         }        
         if (r->inconsistent()) {
             ptr_vector<expr> core_elems;

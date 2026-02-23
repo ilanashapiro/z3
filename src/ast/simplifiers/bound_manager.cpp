@@ -155,8 +155,7 @@ void bound_manager::operator()(expr * f, expr_dependency * d, proof* p) {
 void bound_manager::insert_upper(expr * v, bool strict, numeral const & n, expr_dependency * d) {
     limit old;
     if (m_uppers.find(v, old)) {
-        auto [old_bound, old_strict] = old;
-        if (n < old_bound || (n == old_bound && strict && !old_strict)) {
+        if (n < old.first || (n == old.first && strict && !old.second)) {
             // improved bound
             m_uppers.insert(v, limit(n, strict));
             if (d)
@@ -176,8 +175,7 @@ void bound_manager::insert_upper(expr * v, bool strict, numeral const & n, expr_
 void bound_manager::insert_lower(expr * v, bool strict, numeral const & n, expr_dependency * d) {
     limit old;
     if (m_lowers.find(v, old)) {
-        auto [old_bound, old_strict] = old;
-        if (n > old_bound || (n == old_bound && strict && !old_strict)) {
+        if (n > old.first || (n == old.first && strict && !old.second)) {
             // improved bound
             m_lowers.insert(v, limit(n, strict));
             if (d)

@@ -580,19 +580,20 @@ namespace datalog {
         scoped_ptr<rule_set> res = alloc(rule_set, m_context);
         bool done_something = false;
 
-        for (rule* r : *rules) {
-            rule_ref rl(r, m_rm);
+        rule_set::iterator rend = rules->end();
+        for (rule_set::iterator rit = rules->begin(); rit!=rend; ++rit) {
+            rule_ref r(*rit, m_rm);
 
             rule_ref replacement(m_rm);
-            while (rl && do_eager_inlining(rl, *rules, replacement)) {
-                rl = replacement;
+            while (r && do_eager_inlining(r, *rules, replacement)) {
+                r = replacement;
                 done_something = true;
             }
 
-            if (!rl) {
+            if (!r) {
                 continue;
             }
-            res->add_rule(rl);
+            res->add_rule(r);
         }
         if (done_something) {
             rules = res.detach();

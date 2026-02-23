@@ -677,7 +677,7 @@ namespace datalog {
 
         // enforce interpreted tail predicates
         if (!tail.empty()) {
-            app_ref filter_cond(tail.size() == 1 ? to_app(tail.back()) : m.mk_and(tail), m);
+            app_ref filter_cond(tail.size() == 1 ? to_app(tail.back()) : m.mk_and(tail.size(), tail.data()), m);
 
             // check if there are any columns to remove
             unsigned_vector remove_columns;
@@ -1145,7 +1145,7 @@ namespace datalog {
         set_difference(local_deltas, global_deltas);
         */
         func_decl_set local_deltas;
-        const func_decl_set & global_deltas = head_preds;
+        func_decl_set global_deltas(head_preds);
 
         pred2idx d_global_src;  //these deltas serve as sources of tuples for rule evaluation inside the loop
         get_fresh_registers(global_deltas, d_global_src);

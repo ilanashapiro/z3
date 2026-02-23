@@ -60,6 +60,7 @@ namespace smt {
         else {
             justify(lit, s);
         }
+        m_antecedents.insert(lit.var(), s);
         bool found = false;
         if (m_var2val.contains(e)) {
             found = true;
@@ -93,7 +94,6 @@ namespace smt {
             fml = m.mk_implies(antecedent2fml(s), fml);
             conseq.push_back(fml);
         }
-        m_antecedents.insert(lit.var(), std::move(s));
     }
 
     void context::justify(literal lit, index_set& s) {
@@ -478,6 +478,7 @@ namespace smt {
             else {
                 justify(lit, s);
             }
+            m_antecedents.insert(lit.var(), s);
             if (_nasms.contains(lit.index())) {
                 expr_ref_vector core(m);
                 for (auto v : s) 
@@ -486,7 +487,6 @@ namespace smt {
                 cores.push_back(core);
                 min_core_size = std::min(min_core_size, core.size());
             }
-            m_antecedents.insert(lit.var(), std::move(s));
         }
     }
 

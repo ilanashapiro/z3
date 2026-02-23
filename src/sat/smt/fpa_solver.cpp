@@ -231,7 +231,8 @@ namespace fpa {
                 else if (m_fpa_util.is_numeral(n, val)) {
                     expr_ref bv_val_e(convert(n), m);
                     VERIFY(m_fpa_util.is_fp(bv_val_e, a, b, c));
-                    expr_ref cc_args(m_bv_util.mk_concat({a, b, c}), m);
+                    expr* args[] = { a, b, c };
+                    expr_ref cc_args(m_bv_util.mk_concat(3, args), m);
                     // Require
                     // wrap(n) = bvK
                     // fp(extract(wrap(n)) = n

@@ -414,12 +414,6 @@ namespace smt {
     void theory_fpa::pop_scope_eh(unsigned num_scopes) {
         m_trail_stack.pop_scope(num_scopes);
         TRACE(t_fpa, tout << "pop " << num_scopes << "; now " << m_trail_stack.get_num_scopes() << "\n";);
-        // Reset the fpa2bv rewriter cache so that expressions re-converted after
-        // a pop regenerate their side conditions (extra_assertions). Without this,
-        // the rewriter returns cached results without invoking mk_uf/mk_const and
-        // the axioms connecting FP UFs to their BV counterparts are never re-emitted,
-        // causing a soundness issue in incremental mode.
-        m_rw.reset();
         theory::pop_scope_eh(num_scopes);
     }
 
@@ -461,7 +455,8 @@ namespace smt {
                     SASSERT(to_app(bv_val_e)->get_num_args() == 3);
                     app_ref bv_val_a(m);
                     bv_val_a = to_app(bv_val_e.get());
-                    cc_args = m_bv_util.mk_concat({bv_val_a->get_arg(0), bv_val_a->get_arg(1), bv_val_a->get_arg(2)});
+                    expr * args[] = { bv_val_a->get_arg(0), bv_val_a->get_arg(1), bv_val_a->get_arg(2) };
+                    cc_args = m_bv_util.mk_concat(3, args);
                     c = m.mk_eq(wrapped, cc_args);
                     assert_cnstr(c);
                     assert_cnstr(mk_side_conditions());

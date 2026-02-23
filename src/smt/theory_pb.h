@@ -244,11 +244,19 @@ namespace smt {
 
 
         struct var_info {
-            ineq_watch*  m_lit_watch[2] = { nullptr, nullptr };
-            ineq*        m_ineq = nullptr;
+            ineq_watch*  m_lit_watch[2];
+            ineq*        m_ineq;
 
-            card_watch*  m_lit_cwatch[2] = { nullptr, nullptr };
-            card*        m_card = nullptr;
+            card_watch*  m_lit_cwatch[2];
+            card*        m_card;
+            
+            var_info(): m_ineq(nullptr), m_card(nullptr)
+            {
+                m_lit_watch[0] = nullptr;
+                m_lit_watch[1] = nullptr;
+                m_lit_cwatch[0] = nullptr;
+                m_lit_cwatch[1] = nullptr;
+            }
 
             void reset() {
                 dealloc(m_lit_watch[0]);

@@ -18,7 +18,6 @@ Revision History:
 --*/
 #pragma once
 
-#include <optional>
 #include "ast/ast.h"
 #include "ast/arith_decl_plugin.h"
 #include "ast/bv_decl_plugin.h"
@@ -173,7 +172,7 @@ namespace datalog {
 
         sort* mk_sort(const symbol& name, uint64_t  domain_size);
 
-        std::optional<uint64_t> try_get_size(const sort *) const;
+        bool try_get_size(const sort *, uint64_t& size) const;
 
         bool is_finite_sort(sort* s) const { 
             return is_sort_of(s, get_family_id(), DL_FINITE_SORT); 

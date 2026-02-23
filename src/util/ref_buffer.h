@@ -18,7 +18,6 @@ Revision History:
 --*/
 #pragma once
 
-#include <span>
 #include "util/buffer.h"
 #include "util/obj_ref.h"
 #include "util/ref_vector.h"
@@ -115,15 +114,10 @@ public:
         m_buffer.finalize();
     }        
 
-    void append(std::span<T * const> elems) {
-        for (auto elem : elems) {
-            push_back(elem);
-        }
-    }
-
-    // Backward compatibility overload
     void append(unsigned n, T * const * elems) {
-        append(std::span<T * const>(elems, n));
+        for (unsigned i = 0; i < n; ++i) {
+            push_back(elems[i]);
+        }
     }
 
     void append(ref_buffer_core const & other) {

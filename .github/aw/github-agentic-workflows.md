@@ -243,11 +243,6 @@ The YAML frontmatter supports these fields:
       allowed:
         - "example.com"
         - "*.trusted-domain.com"
-        - "https://api.secure.com"        # Optional: protocol-specific filtering
-      blocked:
-        - "blocked-domain.com"
-        - "*.untrusted.com"
-        - python                          # Block ecosystem identifiers
       firewall: true                      # Optional: Enable AWF (Agent Workflow Firewall) for Copilot engine
     ```
   - **Firewall configuration** (Copilot engine only):
@@ -465,16 +460,6 @@ The YAML frontmatter supports these fields:
         target-repo: "owner/repo"                   # Optional: cross-repository
     ```
     When using `safe-outputs.add-labels`, the main job does **not** need `issues: write` or `pull-requests: write` permission since label addition is handled by a separate job with appropriate permissions.
-  - `remove-labels:` - Safe label removal from issues or PRs
-    ```yaml
-    safe-outputs:
-      remove-labels:
-        allowed: [automated, stale]  # Optional: restrict to specific labels
-        max: 3                       # Optional: maximum number of operations (default: 3)
-        target: "*"                  # Optional: "triggering" (default), "*" (any issue/PR), or number
-        target-repo: "owner/repo"    # Optional: cross-repository
-    ```
-    When `allowed` is omitted, any labels can be removed. Use `allowed` to restrict removal to specific labels. When using `safe-outputs.remove-labels`, the main job does **not** need `issues: write` or `pull-requests: write` permission since label removal is handled by a separate job with appropriate permissions.
   - `add-reviewer:` - Add reviewers to pull requests
     ```yaml
     safe-outputs:
@@ -568,14 +553,6 @@ The YAML frontmatter supports these fields:
         target-repo: "owner/repo"       # Optional: cross-repository
     ```
     Publishes workflow artifacts to an orphaned git branch for persistent storage. Default allowed extensions include common non-executable types. Maximum file size is 50MB (51200 KB).
-  - `dispatch-workflow:` - Trigger other workflows with inputs
-    ```yaml
-    safe-outputs:
-      dispatch-workflow:
-        workflows: [workflow-name]          # Required: list of workflow names to allow
-        max: 3                              # Optional: max dispatches (default: 1, max: 3)
-    ```
-    Triggers other agentic workflows in the same repository using workflow_dispatch. Agent output includes `workflow_name` (without .md extension) and optional `inputs` (key-value pairs). Not supported for cross-repository operations.
   - `create-code-scanning-alert:` - Generate SARIF security advisories
     ```yaml
     safe-outputs:
@@ -1082,11 +1059,6 @@ network:
     - node            # Node.js/NPM ecosystem
     - containers      # Container registries
     - "api.custom.com" # Custom domain
-    - "https://secure.api.com" # Protocol-specific domain
-  blocked:
-    - "tracking.com"   # Block specific domains
-    - "*.ads.com"      # Block domain patterns
-    - ruby             # Block ecosystem identifiers
   firewall: true      # Enable AWF (Copilot engine only)
 
 # Or allow specific domains only
@@ -1107,8 +1079,6 @@ network: {}
 - Use ecosystem identifiers (`python`, `node`, `java`, etc.) for language-specific tools
 - When custom permissions are specified with `allowed:` list, deny-by-default policy is enforced
 - Supports exact domain matches and wildcard patterns (where `*` matches any characters, including nested subdomains)
-- **Protocol-specific filtering**: Prefix domains with `http://` or `https://` for protocol restrictions
-- **Domain blocklist**: Use `blocked:` field to explicitly deny domains or ecosystem identifiers
 - **Firewall support**: Copilot engine supports AWF (Agent Workflow Firewall) for domain-based access control
 - Claude engine uses hooks for enforcement; Codex support planned
 
@@ -1117,7 +1087,6 @@ network: {}
 2. **Ecosystem access**: `network: { allowed: [defaults, python, node, ...] }` (development tool ecosystems)
 3. **No network access**: `network: {}` (deny all)
 4. **Specific domains**: `network: { allowed: ["api.example.com", ...] }` (granular access control)
-5. **Block specific domains**: `network: { blocked: ["tracking.com", "*.ads.com", ...] }` (deny-list)
 
 **Available Ecosystem Identifiers:**
 - `defaults`: Basic infrastructure (certificates, JSON schema, Ubuntu, common package mirrors, Microsoft sources)

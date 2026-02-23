@@ -48,8 +48,6 @@ Revision History:
 #include "util/dependency.h"
 #include "util/rlimit.h"
 #include <variant>
-#include <span>
-#include <initializer_list>
 
 #define RECYCLE_FREE_AST_INDICES
 
@@ -124,20 +122,20 @@ private:
         ast*,      // for PARAM_AST
         symbol,    // for PARAM_SYMBOL
         zstring*,  // for PARAM_ZSTRING
-        rational,  // for PARAM_RATIONAL
+        rational*, // for PARAM_RATIONAL
         double,    // for PARAM_DOUBLE (remark: this is not used in float_decl_plugin)
         unsigned   // for PARAM_EXTERNAL
-    > m_val = 0;
+    > m_val;
 
 public:
 
-    parameter() noexcept = default;
+    parameter() : m_val(0) {}
     explicit parameter(int val): m_val(val) {}
     explicit parameter(unsigned val): m_val((int)val) {}
     explicit parameter(ast * p): m_val(p) {}
     explicit parameter(symbol const & s): m_val(s) {}
-    explicit parameter(rational const & r): m_val(r) {}
-    explicit parameter(rational && r) : m_val(std::move(r)) {} 
+    explicit parameter(rational const & r): m_val(alloc(rational, r)) {}
+    explicit parameter(rational && r) : m_val(alloc(rational, std::move(r))) {} 
     explicit parameter(zstring const& s): m_val(alloc(zstring, s)) {}
     explicit parameter(zstring && s): m_val(alloc(zstring, std::move(s))) {}
     explicit parameter(double d): m_val(d) {}
@@ -189,7 +187,7 @@ public:
     int get_int() const { SASSERT(is_int()); return std::get<int>(m_val); }
     ast * get_ast() const { SASSERT(is_ast()); return std::get<ast*>(m_val); }
     symbol get_symbol() const { SASSERT(is_symbol()); return std::get<symbol>(m_val); }
-    rational const & get_rational() const { SASSERT(is_rational()); return std::get<rational>(m_val); }
+    rational const & get_rational() const { SASSERT(is_rational()); return *std::get<rational*>(m_val); }
     zstring const& get_zstring() const { SASSERT(is_zstring()); return *std::get<zstring*>(m_val); }
     double get_double() const { SASSERT(is_double()); return std::get<double>(m_val); }
     unsigned get_ext_id() const { SASSERT(is_external()); return std::get<unsigned>(m_val); }
@@ -316,12 +314,12 @@ class sort_size {
         // of elements is at least bigger than 2^64.
         SS_FINITE_VERY_BIG,
         SS_INFINITE
-    } m_kind = SS_INFINITE;
-    uint64_t m_size = 0; // It is only meaningful if m_kind == SS_FINITE
+    } m_kind;
+    uint64_t m_size; // It is only meaningful if m_kind == SS_FINITE
     sort_size(kind_t k, uint64_t r):m_kind(k), m_size(r) {}
 public:
-    sort_size() = default;
-    sort_size(uint64_t sz):m_kind(SS_FINITE), m_size(sz) {}
+    sort_size():m_kind(SS_INFINITE), m_size(0) {}
+    sort_size(uint64_t const & sz):m_kind(SS_FINITE), m_size(sz) {}
     explicit sort_size(rational const& r) {
         if (r.is_uint64()) {
             m_kind = SS_FINITE;
@@ -1669,29 +1667,17 @@ public:
     }
 
     template<typename T>
-    void inc_array_ref(std::span<T * const> a) {
-        for(auto elem : a) {
-            inc_ref(elem);
-        }
-    }
-
-    // Backward compatibility overload
-    template<typename T>
     void inc_array_ref(unsigned sz, T * const * a) {
-        inc_array_ref(std::span<T * const>(a, sz));
-    }
-
-    template<typename T>
-    void dec_array_ref(std::span<T * const> a) {
-        for(auto elem : a) {
-            dec_ref(elem);
+        for(unsigned i = 0; i < sz; ++i) {
+            inc_ref(a[i]);
         }
     }
 
-    // Backward compatibility overload
     template<typename T>
     void dec_array_ref(unsigned sz, T * const * a) {
-        dec_array_ref(std::span<T * const>(a, sz));
+        for(unsigned i = 0; i < sz; ++i) {
+            dec_ref(a[i]);
+        }
     }
 
     static unsigned get_node_size(ast const * n);
@@ -1792,8 +1778,6 @@ public:
 
     [[nodiscard]] app * mk_app(family_id fid, decl_kind k, unsigned num_args, expr * const * args);
 
-    [[nodiscard]] app * mk_app(family_id fid, decl_kind k, std::span<expr* const> args);
-
     [[nodiscard]] app * mk_app(family_id fid, decl_kind k, expr * arg);
 
     [[nodiscard]] app * mk_app(family_id fid, decl_kind k, expr * arg1, expr * arg2);
@@ -1808,8 +1792,6 @@ private:
     app * mk_app_core(func_decl * decl, expr * arg1, expr * arg2);
 
     app * mk_app_core(func_decl * decl, unsigned num_args, expr * const * args);
-
-    app * mk_and(unsigned num_args, expr * const * args) { return mk_app(basic_family_id, OP_AND, num_args, args); }
 
 public:
     [[nodiscard]] func_decl * mk_func_decl(symbol const & name, unsigned arity, sort * const * domain, sort * range) {
@@ -2072,12 +2054,6 @@ public:
 
     quantifier * update_quantifier(quantifier * q, quantifier_kind new_kind, unsigned new_num_patterns, expr * const * new_patterns, expr * new_body);
 
-    // Convenience overloads with std::initializer_list
-    [[nodiscard]] quantifier * update_quantifier(quantifier * q, std::initializer_list<expr*> new_patterns, expr * new_body);
-    
-    [[nodiscard]] quantifier * update_quantifier(quantifier * q, std::initializer_list<expr*> new_patterns, std::initializer_list<expr*> new_no_patterns, expr * new_body);
-
-
 // -----------------------------------
 //
 // expr_array
@@ -2212,22 +2188,21 @@ public:
     app * mk_xor(ptr_vector<expr> const& args) { return mk_xor(args.size(), args.data()); }
     app * mk_xor(ref_buffer<expr, ast_manager> const& args) { return mk_xor(args.size(), args.data()); }
     app * mk_or(unsigned num_args, expr * const * args) { return mk_app(basic_family_id, OP_OR, num_args, args); }
-    app * mk_and(std::span<expr* const> args) { return mk_app(basic_family_id, OP_AND, args); }
-    app * mk_or(std::span<expr* const> args) { return mk_app(basic_family_id, OP_OR, args); }
+    app * mk_and(unsigned num_args, expr * const * args) { return mk_app(basic_family_id, OP_AND, num_args, args); }
     app * mk_or(expr * arg1, expr * arg2) { return mk_app(basic_family_id, OP_OR, arg1, arg2); }
     app * mk_and(expr * arg1, expr * arg2) { return mk_app(basic_family_id, OP_AND, arg1, arg2); }
     app * mk_or(expr * arg1, expr * arg2, expr * arg3) { return mk_app(basic_family_id, OP_OR, arg1, arg2, arg3); }
     app * mk_or(expr* a, expr* b, expr* c, expr* d) { expr* args[4] = { a, b, c, d }; return mk_app(basic_family_id, OP_OR, 4, args); }
     app * mk_and(expr * arg1, expr * arg2, expr * arg3) { return mk_app(basic_family_id, OP_AND, arg1, arg2, arg3); }
 
-    app * mk_and(ref_vector<expr, ast_manager> const& args) { return mk_and(std::span<expr* const>(args.data(), args.size())); }
-    app * mk_and(ptr_vector<expr> const& args) { return mk_and(std::span<expr* const>(args.data(), args.size())); }
-    app * mk_and(ref_buffer<expr, ast_manager> const& args) { return mk_and(std::span<expr* const>(args.data(), args.size())); }
-    app * mk_and(ptr_buffer<expr> const& args) { return mk_and(std::span<expr* const>(args.data(), args.size())); }
-    app * mk_or(ref_vector<expr, ast_manager> const& args) { return mk_or(std::span<expr* const>(args.data(), args.size())); }
-    app * mk_or(ptr_vector<expr> const& args) { return mk_or(std::span<expr* const>(args.data(), args.size())); }
-    app * mk_or(ref_buffer<expr, ast_manager> const& args) { return mk_or(std::span<expr* const>(args.data(), args.size())); }
-    app * mk_or(ptr_buffer<expr> const& args) { return mk_or(std::span<expr* const>(args.data(), args.size())); }
+    app * mk_and(ref_vector<expr, ast_manager> const& args) { return mk_and(args.size(), args.data()); }
+    app * mk_and(ptr_vector<expr> const& args) { return mk_and(args.size(), args.data()); }
+    app * mk_and(ref_buffer<expr, ast_manager> const& args) { return mk_and(args.size(), args.data()); }
+    app * mk_and(ptr_buffer<expr> const& args) { return mk_and(args.size(), args.data()); }
+    app * mk_or(ref_vector<expr, ast_manager> const& args) { return mk_or(args.size(), args.data()); }
+    app * mk_or(ptr_vector<expr> const& args) { return mk_or(args.size(), args.data()); }
+    app * mk_or(ref_buffer<expr, ast_manager> const& args) { return mk_or(args.size(), args.data()); }
+    app * mk_or(ptr_buffer<expr> const& args) { return mk_or(args.size(), args.data()); }
     app * mk_implies(expr * arg1, expr * arg2) { return mk_app(basic_family_id, OP_IMPLIES, arg1, arg2); }
     app * mk_not(expr * n) { return mk_app(basic_family_id, OP_NOT, n); }
     app * mk_distinct(unsigned num_args, expr * const * args);
@@ -2368,12 +2343,6 @@ public:
     proof * mk_transitivity(proof * p1, proof * p2, proof * p3, proof * p4);
     proof * mk_transitivity(unsigned num_proofs, proof * const * proofs);
     proof * mk_transitivity(unsigned num_proofs, proof * const * proofs, expr * n1, expr * n2);
-    proof * mk_transitivity(std::initializer_list<proof*> const& proofs) {
-        return mk_transitivity(static_cast<unsigned>(proofs.size()), proofs.begin());
-    }
-    proof * mk_transitivity(std::initializer_list<proof*> const& proofs, expr * n1, expr * n2) {
-        return mk_transitivity(static_cast<unsigned>(proofs.size()), proofs.begin(), n1, n2);
-    }
     proof * mk_monotonicity(func_decl * R, app * f1, app * f2, unsigned num_proofs, proof * const * proofs);
     proof * mk_congruence(app * f1, app * f2, unsigned num_proofs, proof * const * proofs);
     proof * mk_oeq_congruence(app * f1, app * f2, unsigned num_proofs, proof * const * proofs);
@@ -2404,12 +2373,6 @@ public:
     proof * mk_def_axiom(expr * ax);
     proof * mk_unit_resolution(unsigned num_proofs, proof * const * proofs);
     proof * mk_unit_resolution(unsigned num_proofs, proof * const * proofs, expr * new_fact);
-    proof * mk_unit_resolution(std::initializer_list<proof*> const& proofs) {
-        return mk_unit_resolution(static_cast<unsigned>(proofs.size()), proofs.begin());
-    }
-    proof * mk_unit_resolution(std::initializer_list<proof*> const& proofs, expr * new_fact) {
-        return mk_unit_resolution(static_cast<unsigned>(proofs.size()), proofs.begin(), new_fact);
-    }
     proof * mk_hypothesis(expr * h);
     proof * mk_lemma(proof * p, expr * lemma);
 
@@ -2442,16 +2405,10 @@ private:
     }
 
     template<typename T>
-    void push_dec_array_ref(std::span<T * const> a) {
-        for(auto elem : a) {
-            push_dec_ref(elem);
-        }
-    }
-
-    // Backward compatibility overload
-    template<typename T>
     void push_dec_array_ref(unsigned sz, T * const * a) {
-        push_dec_array_ref(std::span<T * const>(a, sz));
+        for(unsigned i = 0; i < sz; ++i) {
+            push_dec_ref(a[i]);
+        }
     }
 };
 

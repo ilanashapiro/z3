@@ -214,24 +214,6 @@ namespace z3 {
     public:
         context() { config c; init(c); }
         context(config & c) { init(c); }
-        
-        context(context && other) noexcept 
-            : m_enable_exceptions(other.m_enable_exceptions),
-              m_rounding_mode(other.m_rounding_mode),
-              m_ctx(other.m_ctx) {
-            other.m_ctx = nullptr;
-        }
-        
-        context & operator=(context && other) noexcept {
-            if (this != &other) {
-                if (m_ctx) Z3_del_context(m_ctx);
-                m_enable_exceptions = other.m_enable_exceptions;
-                m_rounding_mode = other.m_rounding_mode;
-                m_ctx = other.m_ctx;
-                other.m_ctx = nullptr;
-            }
-            return *this;
-        }
         ~context() { if (m_ctx) Z3_del_context(m_ctx); }
         operator Z3_context() const { return m_ctx; }
 
@@ -323,10 +305,6 @@ namespace z3 {
            \brief Return a regular expression sort over sequences \c seq_sort.
          */
         sort re_sort(sort& seq_sort);
-        /**
-           \brief Return a finite set sort over element sort \c s.
-         */
-        sort finite_set_sort(sort& s);
         /**
            \brief Return an array sort for arrays from \c d to \c r.
 
@@ -868,44 +846,6 @@ namespace z3 {
 
     };
 
-    class parser_context : public object {
-        Z3_parser_context m_pc;
-    public:
-        explicit parser_context(context & c):object(c), m_pc(Z3_mk_parser_context(c)) { Z3_parser_context_inc_ref(ctx(), m_pc); }
-        ~parser_context() override { if (m_pc) Z3_parser_context_dec_ref(ctx(), m_pc); }
-        explicit operator bool() const { return m_pc; }
-        operator Z3_parser_context() const { return m_pc; }
-        parser_context(const parser_context &o):object(o), m_pc(o.m_pc) { Z3_parser_context_inc_ref(ctx(), m_pc); }
-        parser_context &operator=(const parser_context &o) {
-            if (this != &o) {
-                if (m_pc) Z3_parser_context_dec_ref(*m_ctx, m_pc);
-                Z3_parser_context_inc_ref(*o.m_ctx, o.m_pc);
-                object::operator=(o);
-                m_pc = o.m_pc;
-            }
-            return *this;
-        }
-
-        /**
-            \brief Add a sort declaration.
-         */
-        void add_sort(const sort & s) { Z3_parser_context_add_sort(ctx(), m_pc, s); check_error(); }
-
-        /**
-            \brief Add a function declaration.
-         */
-        void add_sort(const func_decl & f) { Z3_parser_context_add_decl(ctx(), m_pc, f); check_error(); }
-
-        /**
-            \brief Parse a string of SMTLIB2 commands. Return assertions.
-         */
-        expr_vector parse_string(const char * s) {
-            auto result = Z3_parser_context_from_string(ctx(), m_pc, s);
-            m_ctx->check_error();
-            return expr_vector(ctx(), result);
-        }
-    };
-
     /**
        \brief forward declarations
      */
@@ -1337,17 +1277,6 @@ namespace z3 {
            \pre args.size() == num_args()
         */
         expr update(expr_vector const& args) const;
-
-        /**
-           \brief Update a datatype field.
-           Return a new datatype expression with the specified field updated to the new value.
-           The remaining fields are unchanged.
-
-           \pre is_datatype()
-           \param field_access The accessor function declaration for the field to update
-           \param new_value The new value for the field
-        */
-        expr update_field(func_decl const& field_access, expr const& new_value) const;
 
         /**
            \brief Return the 'body' of this quantifier.
@@ -3068,26 +2997,6 @@ namespace z3 {
             set_initial_value(var, ctx().bool_val(b));            
         }
 
-        void solve_for(expr_vector const& vars, expr_vector& terms, expr_vector& guards) {
-            // Create a copy of vars since the C API modifies the variables vector
-            expr_vector variables(ctx());
-            for (unsigned i = 0; i < vars.size(); ++i) {
-                check_context(*this, vars[i]);
-                variables.push_back(vars[i]);
-            }
-            // Clear output vectors before calling C API
-            terms = expr_vector(ctx());
-            guards = expr_vector(ctx());
-            Z3_solver_solve_for(ctx(), m_solver, variables, terms, guards);
-            check_error();
-        }
-
-        void import_model_converter(solver const& src) {
-            check_context(*this, src);
-            Z3_solver_import_model_converter(ctx(), src.m_solver, m_solver);
-            check_error();
-        }
-
         expr proof() const { Z3_ast r = Z3_solver_get_proof(ctx(), m_solver); check_error(); return expr(ctx(), r); }
         friend std::ostream & operator<<(std::ostream & out, solver const & s);
 
@@ -3705,7 +3614,6 @@ namespace z3 {
     inline sort context::char_sort() { Z3_sort s = Z3_mk_char_sort(m_ctx); check_error(); return sort(*this, s); }
     inline sort context::seq_sort(sort& s) { Z3_sort r = Z3_mk_seq_sort(m_ctx, s); check_error(); return sort(*this, r); }
     inline sort context::re_sort(sort& s) { Z3_sort r = Z3_mk_re_sort(m_ctx, s); check_error(); return sort(*this, r); }
-    inline sort context::finite_set_sort(sort& s) { Z3_sort r = Z3_mk_finite_set_sort(m_ctx, s); check_error(); return sort(*this, r); }
     inline sort context::fpa_sort(unsigned ebits, unsigned sbits) { Z3_sort s = Z3_mk_fpa_sort(m_ctx, ebits, sbits); check_error(); return sort(*this, s); }
 
     template<>
@@ -4307,54 +4215,6 @@ namespace z3 {
         MK_EXPR2(Z3_mk_set_subset, a, b);
     }
 
-    // finite set operations
-
-    inline expr finite_set_empty(sort const& s) {
-        Z3_ast r = Z3_mk_finite_set_empty(s.ctx(), s);
-        s.check_error();
-        return expr(s.ctx(), r);
-    }
-
-    inline expr finite_set_singleton(expr const& e) {
-        MK_EXPR1(Z3_mk_finite_set_singleton, e);
-    }
-
-    inline expr finite_set_union(expr const& a, expr const& b) {
-        MK_EXPR2(Z3_mk_finite_set_union, a, b);
-    }
-
-    inline expr finite_set_intersect(expr const& a, expr const& b) {
-        MK_EXPR2(Z3_mk_finite_set_intersect, a, b);
-    }
-
-    inline expr finite_set_difference(expr const& a, expr const& b) {
-        MK_EXPR2(Z3_mk_finite_set_difference, a, b);
-    }
-
-    inline expr finite_set_member(expr const& e, expr const& s) {
-        MK_EXPR2(Z3_mk_finite_set_member, e, s);
-    }
-
-    inline expr finite_set_size(expr const& s) {
-        MK_EXPR1(Z3_mk_finite_set_size, s);
-    }
-
-    inline expr finite_set_subset(expr const& a, expr const& b) {
-        MK_EXPR2(Z3_mk_finite_set_subset, a, b);
-    }
-
-    inline expr finite_set_map(expr const& f, expr const& s) {
-        MK_EXPR2(Z3_mk_finite_set_map, f, s);
-    }
-
-    inline expr finite_set_filter(expr const& f, expr const& s) {
-        MK_EXPR2(Z3_mk_finite_set_filter, f, s);
-    }
-
-    inline expr finite_set_range(expr const& low, expr const& high) {
-        MK_EXPR2(Z3_mk_finite_set_range, low, high);
-    }
-
     // sequence and regular expression operations.
     // union is +
     // concat is overloaded to handle sequences and regular expressions
@@ -4569,13 +4429,6 @@ namespace z3 {
             _args[i] = args[i];
         }
         Z3_ast r = Z3_update_term(ctx(), m_ast, args.size(), _args.ptr());
-        check_error();
-        return expr(ctx(), r);
-    }
-
-    inline expr expr::update_field(func_decl const& field_access, expr const& new_value) const {
-        assert(is_datatype());
-        Z3_ast r = Z3_datatype_update_field(ctx(), field_access, m_ast, new_value);
         check_error();
         return expr(ctx(), r);
     }

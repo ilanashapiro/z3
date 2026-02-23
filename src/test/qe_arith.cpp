@@ -193,7 +193,7 @@ static app_ref generate_ineqs(ast_manager& m, sort* s, vector<expr_ref_vector>& 
 static void test_c(app* x, expr_ref_vector const& c) {
     ast_manager& m = c.get_manager();
     expr_ref fml(m);
-    fml = m.mk_and(std::span<expr* const>(c.data(), c.size()));
+    fml = m.mk_and(c.size(), c.data());
     test(x, fml);
 }
 

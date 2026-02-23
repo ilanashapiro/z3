@@ -115,5 +115,3 @@ genaisrc/genblogpost.genai.mts
 *.mts
 # Bazel generated files
 bazel-*
-# Local issue tracking
-.beads

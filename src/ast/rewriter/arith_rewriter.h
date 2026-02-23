@@ -18,7 +18,6 @@ Notes:
 --*/
 #pragma once
 
-#include <optional>
 #include "ast/rewriter/poly_rewriter.h"
 #include "ast/arith_decl_plugin.h"
 #include "ast/seq_decl_plugin.h"
@@ -76,7 +75,7 @@ class arith_rewriter : public poly_rewriter<arith_rewriter_core> {
     br_status mk_le_ge_eq_core(expr * arg1, expr * arg2, op_kind kind, expr_ref & result);
     bool is_add_factor(expr* s, expr* t);
     bool is_mul_factor(expr* s, expr* t);
-    std::optional<expr*> find_nl_factor(expr* t);
+    expr* find_nl_factor(expr* t);
     void get_nl_muls(expr* t, ptr_buffer<expr>& muls);
     expr_ref remove_factor(expr* s, expr* t);
     br_status factor_le_ge_eq(expr * arg1, expr * arg2, op_kind kind, expr_ref & result);

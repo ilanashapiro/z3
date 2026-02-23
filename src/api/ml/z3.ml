@@ -216,8 +216,6 @@ sig
   val to_string : sort -> string
   val mk_uninterpreted : context -> Symbol.symbol -> sort
   val mk_uninterpreted_s : context -> string -> sort
-  val mk_type_variable : context -> Symbol.symbol -> sort
-  val mk_type_variable_s : context -> string -> sort
 end = struct
   type sort = Z3native.sort
   let gc a = Z3native.context_of_ast a
@@ -230,8 +228,6 @@ end = struct
   let to_string (x:sort) = Z3native.sort_to_string (gc x) x
   let mk_uninterpreted ctx s = Z3native.mk_uninterpreted_sort ctx s
   let mk_uninterpreted_s (ctx:context) (s:string) = mk_uninterpreted ctx (Symbol.mk_string ctx s)
-  let mk_type_variable ctx s = Z3native.mk_type_variable ctx s
-  let mk_type_variable_s (ctx:context) (s:string) = mk_type_variable ctx (Symbol.mk_string ctx s)
 end
 
 and FuncDecl :
@@ -912,13 +908,6 @@ struct
   let mk_sort_s (ctx:context) (name:string) (constructors:Constructor.constructor list) =
     mk_sort ctx (Symbol.mk_string ctx name) constructors
 
-  let mk_polymorphic_sort (ctx:context) (name:Symbol.symbol) (type_params:Sort.sort list) (constructors:Constructor.constructor list) =
-    let (x,_) = Z3native.mk_polymorphic_datatype ctx name (List.length type_params) type_params (List.length constructors) constructors in
-    x
-
-  let mk_polymorphic_sort_s (ctx:context) (name:string) (type_params:Sort.sort list) (constructors:Constructor.constructor list) =
-    mk_polymorphic_sort ctx (Symbol.mk_string ctx name) type_params constructors
-
   let mk_sort_ref (ctx: context) (name:Symbol.symbol) =
     Z3native.mk_datatype_sort ctx name 0 []
 
@@ -961,9 +950,6 @@ struct
       let g j = Z3native.get_datatype_sort_constructor_accessor (Sort.gc x) x i j in
       List.init ds g) in
     List.init n f
-
-  let update_field (ctx:context) (field_access:FuncDecl.func_decl) (t:Expr.expr) (v:Expr.expr) =
-    Z3native.datatype_update_field ctx field_access t v
 end
 
 
@@ -1309,24 +1295,6 @@ struct
   let mk_char_to_bv = Z3native.mk_char_to_bv
   let mk_char_from_bv = Z3native.mk_char_from_bv
   let mk_char_is_digit = Z3native.mk_char_is_digit
-end
-
-module FiniteSet =
-struct
-  let mk_sort = Z3native.mk_finite_set_sort
-  let is_finite_set_sort = Z3native.is_finite_set_sort
-  let get_sort_basis = Z3native.get_finite_set_sort_basis
-  let mk_empty = Z3native.mk_finite_set_empty
-  let mk_singleton = Z3native.mk_finite_set_singleton
-  let mk_union = Z3native.mk_finite_set_union
-  let mk_intersect = Z3native.mk_finite_set_intersect
-  let mk_difference = Z3native.mk_finite_set_difference
-  let mk_member = Z3native.mk_finite_set_member
-  let mk_size = Z3native.mk_finite_set_size
-  let mk_subset = Z3native.mk_finite_set_subset
-  let mk_map = Z3native.mk_finite_set_map
-  let mk_filter = Z3native.mk_finite_set_filter
-  let mk_range = Z3native.mk_finite_set_range
 end
 
 module FloatingPoint =
@@ -1958,66 +1926,6 @@ struct
 
   let interrupt (ctx:context) (s:solver) =
     Z3native.solver_interrupt ctx s
-
-  let get_units x =
-    let av = Z3native.solver_get_units (gc x) x in
-    AST.ASTVector.to_expr_list av
-
-  let get_non_units x =
-    let av = Z3native.solver_get_non_units (gc x) x in
-    AST.ASTVector.to_expr_list av
-
-  let get_trail x =
-    let av = Z3native.solver_get_trail (gc x) x in
-    AST.ASTVector.to_expr_list av
-
-  let get_levels x literals =
-    let n = List.length literals in
-    let av = Z3native.mk_ast_vector (gc x) in
-    List.iter (fun e -> Z3native.ast_vector_push (gc x) av e) literals;
-    let level_list = Z3native.solver_get_levels (gc x) x av n in
-    Array.of_list level_list
-
-  let congruence_root x a = Z3native.solver_congruence_root (gc x) x a
-
-  let congruence_next x a = Z3native.solver_congruence_next (gc x) x a
-
-  let congruence_explain x a b = Z3native.solver_congruence_explain (gc x) x a b
-
-  let from_file x = Z3native.solver_from_file (gc x) x
-
-  let from_string x = Z3native.solver_from_string (gc x) x
-
-  let set_initial_value x var value = Z3native.solver_set_initial_value (gc x) x var value
-
-  let cube x variables cutoff =
-    let av = Z3native.mk_ast_vector (gc x) in
-    List.iter (fun e -> Z3native.ast_vector_push (gc x) av e) variables;
-    let result = Z3native.solver_cube (gc x) x av cutoff in
-    AST.ASTVector.to_expr_list result
-
-  let get_consequences x assumptions variables =
-    let asms = Z3native.mk_ast_vector (gc x) in
-    let vars = Z3native.mk_ast_vector (gc x) in
-    let cons = Z3native.mk_ast_vector (gc x) in
-    List.iter (fun e -> Z3native.ast_vector_push (gc x) asms e) assumptions;
-    List.iter (fun e -> Z3native.ast_vector_push (gc x) vars e) variables;
-    let r = Z3native.solver_get_consequences (gc x) x asms vars cons in
-    let status = match lbool_of_int r with
-      | L_TRUE -> SATISFIABLE
-      | L_FALSE -> UNSATISFIABLE
-      | _ -> UNKNOWN
-    in
-    (status, AST.ASTVector.to_expr_list cons)
-
-  let solve_for x variables terms guards =
-    let var_vec = Z3native.mk_ast_vector (gc x) in
-    let term_vec = Z3native.mk_ast_vector (gc x) in
-    let guard_vec = Z3native.mk_ast_vector (gc x) in
-    List.iter (fun e -> Z3native.ast_vector_push (gc x) var_vec e) variables;
-    List.iter (fun e -> Z3native.ast_vector_push (gc x) term_vec e) terms;
-    List.iter (fun e -> Z3native.ast_vector_push (gc x) guard_vec e) guards;
-    Z3native.solver_solve_for (gc x) x var_vec term_vec guard_vec
 end
 
 

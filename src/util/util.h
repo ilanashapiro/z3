@@ -28,7 +28,6 @@ Revision History:
 #include <functional>
 #include <algorithm>
 #include <iterator>
-#include <span>
 
 #ifndef SIZE_MAX
 #define SIZE_MAX std::numeric_limits<std::size_t>::max()
@@ -80,14 +79,14 @@ static_assert(sizeof(int64_t) == 8, "64 bits");
 # define Z3_fallthrough
 #endif
 
-static inline bool is_power_of_two(unsigned v) { return !(v & (v - 1)) && v; }
+inline bool is_power_of_two(unsigned v) { return !(v & (v - 1)) && v; }
 
 /**
    \brief Return the next power of two that is greater than or equal to v.
    
    \warning This function returns 0 for v == 0.
 */
-static inline unsigned next_power_of_two(unsigned v) {
+inline unsigned next_power_of_two(unsigned v) {
     v--;
     v |= v >> 1;
     v |= v >> 2;
@@ -231,8 +230,8 @@ public:
         m_ptr(ptr) {
     }
 
-    scoped_ptr(scoped_ptr &&other) noexcept : m_ptr(other.m_ptr) {
-        other.m_ptr = nullptr;
+    scoped_ptr(scoped_ptr &&other) noexcept : m_ptr(nullptr) {
+        std::swap(m_ptr, other.m_ptr);
     }
 
     ~scoped_ptr() {
@@ -345,7 +344,6 @@ public:
     }
 
     void set_seed(unsigned s) { m_data = s; }
-    unsigned get_seed() const { return m_data; }
 
     int operator()() {
         return ((m_data = m_data * 214013L + 2531011L) >> 16) & 0x7fff; 
@@ -362,18 +360,12 @@ public:
 };
 
 template<typename T>
-void shuffle(std::span<T> array, random_gen & gen) {
-    auto n = array.size();
-    while (n-- > 0) {
+void shuffle(unsigned sz, T * array, random_gen & gen) {
+    int n = sz;
+    while (--n > 0) {
         int k = gen() % (n + 1);
         std::swap(array[n], array[k]);
     }
-}
-
-// Backward compatibility overload
-template<typename T>
-void shuffle(unsigned sz, T * array, random_gen & gen) {
-    shuffle(std::span<T>(array, sz), gen);
 }
 
 void fatal_error(int error_code);

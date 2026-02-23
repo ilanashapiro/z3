@@ -29,14 +29,10 @@ namespace bv {
         solver::var_pos vp;
         sat::literal lit;
     public:
-        bit_trail(solver& s, var_pos vp) : s(s), vp(vp) {
-            auto [v, idx] = vp;
-            lit = s.m_bits[v][idx];
-        }
+        bit_trail(solver& s, var_pos vp) : s(s), vp(vp), lit(s.m_bits[vp.first][vp.second]) {}
 
         void undo() override {
-            auto [v, idx] = vp;
-            s.m_bits[v][idx] = lit;
+            s.m_bits[vp.first][vp.second] = lit;
         }
     };
 
@@ -153,7 +149,9 @@ namespace bv {
     void solver::find_new_diseq_axioms(atom& a, theory_var v, unsigned idx) {
         literal l = m_bits[v][idx];
         l.neg();
-        for (auto [v2, idx2] : a) {
+        for (auto vp : a) {
+            theory_var v2 = vp.first;
+            unsigned   idx2 = vp.second;
             if (idx == idx2 && m_bits[v2].size() == m_bits[v].size() && m_bits[v2][idx2] == l )
                 mk_new_diseq_axiom(v, v2, idx);
         }
@@ -192,8 +190,8 @@ namespace bv {
             }
         }
         else if (m.is_bool(e) && (a = m_bool_var2atom.get(expr2literal(e).var(), nullptr))) {
-            for (auto [v, idx] : *a)
-                out << " " << var2enode(v)->get_expr_id() << "[" << idx << "]";
+            for (var_pos vp : *a)
+                out << " " << var2enode(vp.first)->get_expr_id() << "[" << vp.second << "]";
         }
         else
             out << " " << mk_bounded_pp(e, m, 1);
@@ -529,8 +527,8 @@ namespace bv {
         if (a) {
             force_push();
             m_prop_queue.push_back(propagation_item(a));            
-            for (auto [v, idx] : a->m_bit2occ) 
-                del_eq_occurs(v, idx);
+            for (auto p : a->m_bit2occ) 
+                del_eq_occurs(p.first, p.second);
         }
     }
 
@@ -583,7 +581,8 @@ namespace bv {
     }
 
     bool solver::propagate_bits(var_pos entry) {
-        auto [v1, idx] = entry;
+        theory_var v1 = entry.first;
+        unsigned idx = entry.second;
         SASSERT(idx < m_bits[v1].size());
         if (m_wpos[v1] == idx)
             find_wpos(v1);
@@ -633,8 +632,8 @@ namespace bv {
         for (auto kv : m_delay_internalize)
             delay.push_back(std::make_pair(kv.m_key, kv.m_value));
         flet<bool> _cheap1(m_cheap_axioms, true);
-        for (auto [e, mode] : delay) 
-            if (!check_delay_internalized(e))
+        for (auto kv : delay) 
+            if (!check_delay_internalized(kv.first))
                 ok = false;
         if (!ok)
             return sat::check_result::CR_CONTINUE;
@@ -642,8 +641,8 @@ namespace bv {
         // if (repair_model()) return sat::check_result::DONE;
 
         flet<bool> _cheap2(m_cheap_axioms, false);
-        for (auto [e, mode] : delay) 
-            if (!check_delay_internalized(e))
+        for (auto kv : delay) 
+            if (!check_delay_internalized(kv.first))
                 ok = false;
         
         if (!ok)
@@ -679,16 +678,16 @@ namespace bv {
         atom* a = get_bv2a(l.var());
         if (!a)
             return true;
-        for (auto [v, idx] : *a) {            
-            sat::literal l2 = m_bits[v][idx];
+        for (auto vp : *a) {            
+            sat::literal l2 = m_bits[vp.first][vp.second];
             if (l2.var() == r.var())
                 continue;
             SASSERT(l2.var() == l.var());
             VERIFY(l2.var() == l.var());
             sat::literal r2 = (l.sign() == l2.sign()) ? r : ~r;
-            ctx.push(vector2_value_trail<bits_vector, sat::literal>(m_bits, v, idx));
-            m_bits[v][idx] = r2;
-            set_bit_eh(v, r2, idx);
+            ctx.push(vector2_value_trail<bits_vector, sat::literal>(m_bits, vp.first, vp.second));
+            m_bits[vp.first][vp.second] = r2;
+            set_bit_eh(vp.first, r2, vp.second);
         }
         ctx.push(bit_occs_trail(*this, *a));
         a->m_occs = nullptr;
@@ -712,7 +711,7 @@ namespace bv {
             hash(solver& s) :s(s) {}
             bool operator()(theory_var v) const {
                 literal_vector const& a = s.m_bits[v];
-                return string_hash(std::string_view(reinterpret_cast<char*>(a.data()), a.size() * sizeof(sat::literal)), 3);
+                return string_hash(reinterpret_cast<char*>(a.data()), a.size() * sizeof(sat::literal), 3);
             }
         };
         eq eq_proc(*this);
@@ -774,8 +773,8 @@ namespace bv {
 
     std::ostream& solver::display(std::ostream& out, atom const& a) const {
         out << a.m_bv << "\n";
-        for (auto [v, idx] : a) 
-            out << v << "[" << idx << "]\n";
+        for (auto vp : a) 
+            out << vp.first << "[" << vp.second << "]\n";
         for (auto e : a.eqs())
             out << e.m_bv1 << " " << e.m_bv2 << "\n";
         return out;

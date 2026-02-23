@@ -62,9 +62,10 @@ class ackr_bound_probe : public probe {
 public:
     result operator()(goal const & g) override {
         proc p(g.m());
+        unsigned sz = g.size();
         expr_fast_mark1 visited;
-        for (auto [curr, dep, pr] : g) {
-            for_each_expr_core<proc, expr_fast_mark1, true, true>(p, visited, curr);
+        for (unsigned i = 0; i < sz; ++i) {
+            for_each_expr_core<proc, expr_fast_mark1, true, true>(p, visited, g.form(i));
         }
         p.prune_non_select();
         double total = ackr_helper::calculate_lemma_bound(p.m_fun2terms, p.m_sel2terms);

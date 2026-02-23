@@ -98,9 +98,12 @@ protected:
     friend class mpbq_manager;
     friend class mpz_stack;
 public:
-    mpz(int v = 0) noexcept : m_val(v), m_kind(mpz_small), m_owner(mpz_self), m_ptr(nullptr) {}
-    mpz(mpz_type* ptr) noexcept : m_val(0), m_kind(mpz_small), m_owner(mpz_ext), m_ptr(ptr) { SASSERT(ptr); }
-    mpz(mpz && other) noexcept : mpz() { swap(other); }
+    mpz(int v):m_val(v), m_kind(mpz_small), m_owner(mpz_self), m_ptr(nullptr) {}
+    mpz():m_val(0), m_kind(mpz_small), m_owner(mpz_self), m_ptr(nullptr) {}
+    mpz(mpz_type* ptr): m_val(0), m_kind(mpz_small), m_owner(mpz_ext), m_ptr(ptr) { SASSERT(ptr);}
+    mpz(mpz && other) noexcept : m_val(other.m_val), m_kind(other.m_kind), m_owner(other.m_owner), m_ptr(nullptr) {
+        std::swap(m_ptr, other.m_ptr);
+    }
 
     mpz& operator=(mpz const& other) = delete;
     mpz& operator=(mpz &&other) noexcept {
@@ -156,9 +159,8 @@ class mpz_manager {
     mutable mpn_manager             m_mpn_manager;
 
 #ifndef _MP_GMP
-    // 64-bit machine?
-    static const unsigned m_init_cell_capacity = sizeof(digit_t) == sizeof(uint64_t) ? 4 : 6;
-    mpz                   m_int_min;
+    unsigned                m_init_cell_capacity;
+    mpz                     m_int_min;
     
     static unsigned cell_size(unsigned capacity) { 
         return sizeof(mpz_cell) + sizeof(digit_t) * capacity; 
@@ -208,12 +210,16 @@ class mpz_manager {
 
     mpz_t * allocate() {        
         mpz_t * cell;
+#ifdef SINGLE_THREAD
+        cell = reinterpret_cast<mpz_t*>(m_allocator.allocate(sizeof(mpz_t)));        
+#else
         if (SYNCH) {
             cell = reinterpret_cast<mpz_t*>(memory::allocate(sizeof(mpz_t)));
         }
         else {
             cell = reinterpret_cast<mpz_t*>(m_allocator.allocate(sizeof(mpz_t)));        
         }
+#endif
         mpz_init(*cell);
         return cell;
     }
@@ -221,12 +227,16 @@ class mpz_manager {
     void deallocate(bool is_heap, mpz_t * ptr) { 
         mpz_clear(*ptr); 
         if (is_heap) {
+#ifdef SINGLE_THREAD
+            m_allocator.deallocate(sizeof(mpz_t), ptr); 
+#else
             if (SYNCH) {
                 memory::deallocate(ptr);
             }
             else {
                 m_allocator.deallocate(sizeof(mpz_t), ptr); 
             }
+#endif
         }
     }
 
@@ -387,7 +397,7 @@ class mpz_manager {
     int big_compare(mpz const & a, mpz const & b);
 
 public:
-    static unsigned size_info(mpz const & a);
+    unsigned size_info(mpz const & a);
     struct sz_lt;
 
     static bool precise() { return true; }
@@ -434,8 +444,6 @@ public:
     void div(mpz const & a, mpz const & b, mpz & c);
 
     void mod(mpz const & a, mpz const & b, mpz & c);
-
-    mpz mod2k(mpz const & a, unsigned k);
 
     void neg(mpz & a);
 
