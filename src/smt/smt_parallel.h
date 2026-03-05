@@ -23,6 +23,7 @@ Revision History:
 #include "ast/sls/sls_smt_solver.h"
 #include <thread>
 #include <mutex>
+#include <atomic>
 
 
 namespace smt {
@@ -145,7 +146,12 @@ namespace smt {
             unsigned m_num_shared_units = 0;
             unsigned m_num_initial_atoms = 0;
             unsigned m_shared_clause_limit = 0; // remembers the index into shared_clause_trail marking the boundary between "old" and "new" clauses to share
-            
+
+            // Terminate on Demand: which node this worker is currently checking,
+            // and whether that node has since been split by another worker.
+            std::atomic<node*> m_cur_node{nullptr};
+            std::atomic<bool>  m_node_stale{false};
+
             expr_ref get_split_atom();
 
             lbool check_cube(expr_ref_vector const& cube);
@@ -165,6 +171,13 @@ namespace smt {
 
             void cancel();
             void collect_statistics(::statistics& st) const;
+
+            // Called by batch_manager::split to signal this worker that its current
+            // node has been split (Terminate on Demand).
+            void check_and_set_stale(node* n) {
+                if (m_cur_node.load(std::memory_order_relaxed) == n)
+                    m_node_stale.store(true, std::memory_order_relaxed);
+            }
 
             reslimit& limit() {
                 return m.limit();

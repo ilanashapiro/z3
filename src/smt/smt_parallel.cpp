@@ -119,9 +119,19 @@ namespace smt {
                 LOG_WORKER(1, " no more cubes\n");
                 return;
             }
+            // Terminate on Demand: register the node we are about to check and
+            // clear any stale signal left over from the previous cube.
+            m_cur_node.store(node, std::memory_order_relaxed);
+            m_node_stale.store(false, std::memory_order_relaxed);
             collect_shared_clauses();
 
         check_cube_start:
+            // Terminate on Demand: another worker has split our node; the two
+            // children now cover this search space, so skip and get a fresh cube.
+            if (m_node_stale.exchange(false, std::memory_order_relaxed)) {
+                LOG_WORKER(1, " ToD: node split by another worker, fetching new cube\n");
+                break;
+            }
             LOG_WORKER(1, " CUBE SIZE IN MAIN LOOP: " << cube.size() << "\n");
             lbool r = check_cube(cube);
 
@@ -354,6 +364,11 @@ namespace smt {
         ++m_stats.m_num_cubes;
         m_stats.m_max_cube_depth = std::max(m_stats.m_max_cube_depth, node->depth() + 1);
         m_search_tree.split(node, lit, nlit);
+
+        // Terminate on Demand: the two children now cover node's search space, so
+        // any other worker still checking node can be told to fetch a fresh cube.
+        for (auto* w : p.m_workers)
+            w->check_and_set_stale(node);
     }
 
     void parallel::batch_manager::collect_clause(ast_translation &l2g, unsigned source_worker_id, expr *clause) {
