@@ -137,3 +137,33 @@ func (c *Context) MkFPIsInf(expr *Expr) *Expr {
 func (c *Context) MkFPIsZero(expr *Expr) *Expr {
 	return newExpr(c, C.Z3_mk_fpa_is_zero(c.ptr, expr.ptr))
 }
+
+// MkFPIsNormal creates a predicate checking if a floating-point number is normal.
+func (c *Context) MkFPIsNormal(expr *Expr) *Expr {
+	return newExpr(c, C.Z3_mk_fpa_is_normal(c.ptr, expr.ptr))
+}
+
+// MkFPIsSubnormal creates a predicate checking if a floating-point number is subnormal.
+func (c *Context) MkFPIsSubnormal(expr *Expr) *Expr {
+	return newExpr(c, C.Z3_mk_fpa_is_subnormal(c.ptr, expr.ptr))
+}
+
+// MkFPIsNegative creates a predicate checking if a floating-point number is negative.
+func (c *Context) MkFPIsNegative(expr *Expr) *Expr {
+	return newExpr(c, C.Z3_mk_fpa_is_negative(c.ptr, expr.ptr))
+}
+
+// MkFPIsPositive creates a predicate checking if a floating-point number is positive.
+func (c *Context) MkFPIsPositive(expr *Expr) *Expr {
+	return newExpr(c, C.Z3_mk_fpa_is_positive(c.ptr, expr.ptr))
+}
+
+// MkFPToIEEEBV converts a floating-point number to its IEEE 754 bit-vector representation.
+func (c *Context) MkFPToIEEEBV(expr *Expr) *Expr {
+	return newExpr(c, C.Z3_mk_fpa_to_ieee_bv(c.ptr, expr.ptr))
+}
+
+// MkFPToReal converts a floating-point number to a real number.
+func (c *Context) MkFPToReal(expr *Expr) *Expr {
+	return newExpr(c, C.Z3_mk_fpa_to_real(c.ptr, expr.ptr))
+}

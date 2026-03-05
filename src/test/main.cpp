@@ -287,4 +287,5 @@ int main(int argc, char ** argv) {
     TST(ho_matcher);
     TST(finite_set);
     TST(finite_set_rewriter);
+    TST(fpa);
 }

@@ -4013,10 +4013,10 @@ public:
             if (m_nla && (st == lp::lp_status::OPTIMAL || st == lp::lp_status::UNBOUNDED)) {
                 switch (check_nla(level)) {
                 case FC_DONE:
+                case FC_CONTINUE:
                     st = lp::lp_status::FEASIBLE;
                     break;
                 case FC_GIVEUP:
-                case FC_CONTINUE:
                     st = lp::lp_status::UNBOUNDED;
                     break;
                 }                

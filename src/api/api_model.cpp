@@ -164,7 +164,7 @@ extern "C" {
         model::scoped_model_completion _scm(*_m, model_completion);
         result = (*_m)(to_expr(t));
         mk_c(c)->save_ast_trail(result.get());
-        *v = of_ast(result.get());
+        if (v) *v = of_ast(result.get());
         RETURN_Z3_model_eval true;
         Z3_CATCH_RETURN(false);
     }

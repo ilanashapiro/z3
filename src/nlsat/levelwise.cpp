@@ -55,6 +55,8 @@ namespace nlsat {
 
         unsigned               m_level = 0;      // current level being processed
         unsigned               m_spanning_tree_threshold = 3; // minimum both-side count for spanning tree
+        bool                   m_witness_subs_lc = true;
+        bool                   m_witness_subs_disc = false;
         unsigned               m_l_rf = UINT_MAX; // position of lower bound in m_rel.m_rfunc
         unsigned               m_u_rf = UINT_MAX; // position of upper bound in m_rel.m_rfunc, UINT_MAX in section case
 
@@ -74,22 +76,6 @@ namespace nlsat {
         mutable std_vector<unsigned> m_unique_neighbor;    // UINT_MAX = not set, UINT_MAX-1 = multiple
 
         assignment const& sample() const { return m_solver.sample(); }
-
-        // Utility: call fn for each distinct irreducible factor of poly
-        template <typename Func>
-        void for_each_distinct_factor(polynomial_ref const& poly_in, Func&& fn) {
-            if (!poly_in || is_zero(poly_in) || is_const(poly_in))
-                return;
-            polynomial_ref poly(poly_in);
-            polynomial_ref_vector factors(m_pm);
-            ::nlsat::factor(poly, m_cache, factors);
-            for (unsigned i = 0; i < factors.size(); ++i) {
-                polynomial_ref f(factors.get(i), m_pm);
-                if (!f || is_zero(f) || is_const(f))
-                    continue;
-                fn(f);
-            }
-        }
 
         struct root_function {
             scoped_anum       val;
@@ -260,6 +246,8 @@ namespace nlsat {
                 m_I.emplace_back(m_pm);
 
             m_spanning_tree_threshold = m_solver.lws_spt_threshold();
+            m_witness_subs_lc = m_solver.lws_witness_subs_lc();
+            m_witness_subs_disc = m_solver.lws_witness_subs_disc();
         }
 
         // Handle a polynomial whose every coefficient evaluates to zero at the sample.
@@ -371,13 +359,19 @@ namespace nlsat {
             return polynomial_ref(m_pm);
         }
 
-        void request_factorized(polynomial_ref const& poly) {
-            for_each_distinct_factor(poly, [&](polynomial_ref const& f) {
-                TRACE(lws,
-                      m_pm.display(tout << "      request_factorized: factor=", f) << " at level " << m_pm.max_var(f) << "\n";
-                    );
+        void request_factorized(polynomial_ref & poly) {
+            if (!poly || is_zero(poly) || is_const(poly))
+                return;
+            polynomial_ref_vector factors(m_pm);
+            ::nlsat::factor(poly, m_cache, factors);
+            for (unsigned i = 0; i < factors.size(); ++i) {
+                polynomial_ref f(factors.get(i), m_pm);
+                if (!f || is_zero(f) || is_const(f))
+                    continue;
+                TRACE(lws, m_pm.display(tout << "f:", f)<< ",";);
                 m_todo.insert(f.get());
-            });
+            }
+            
         }
 
         // Select a coefficient c of p (wrt x) such that c(s) != 0, or return null.
@@ -429,7 +423,7 @@ namespace nlsat {
         }
 
         
-        void add_projection_for_poly(polynomial_ref const& p, unsigned x, polynomial_ref const& nonzero_coeff, bool add_leading_coeff, bool add_discriminant) {
+        void add_projection_for_poly(polynomial_ref const& p, unsigned x, polynomial_ref & nonzero_coeff, bool add_leading_coeff, bool add_discriminant) {
                TRACE(lws,
                   m_pm.display(tout << "  add_projection_for_poly: p=", p)
                       << " x=" << x << " add_lc=" << add_leading_coeff << " add_disc=" << add_discriminant << "\n";
@@ -443,7 +437,7 @@ namespace nlsat {
                 lc = m_pm.coeff(p, x, deg);
                 TRACE(lws, m_pm.display(tout << "    adding lc: ", lc) << "\n";);
                 request_factorized(lc);
-                if (add_nzero_coeff && lc && sign(lc))
+                if (add_nzero_coeff && m_witness_subs_disc && lc && sign(lc))
                     add_nzero_coeff = false;
             }
 
@@ -455,7 +449,7 @@ namespace nlsat {
                     // If p is nullified at some point then at this point discriminant well be evaluated
                     // to zero, as can be seen from the Sylvester matrix which would
                     // have at least one zero row.
-                    if (add_nzero_coeff && sign(disc)) // we can avoid adding a nonzero_coeff if sign(disc) != 0
+                    if (add_nzero_coeff && m_witness_subs_disc && sign(disc)) // we can avoid adding a nonzero_coeff if sign(disc) != 0
                         add_nzero_coeff = false;
                 }
             }
@@ -1105,7 +1099,8 @@ namespace nlsat {
                 TRACE(lws,
                       m_pm.display(m_pm.display(tout << "  Adjacent resultant pair: ", p1) << " and ", p2) << "\n";
                     );
-                request_factorized(psc_resultant(p1, p2, m_n));
+                polynomial_ref res = psc_resultant(p1, p2, m_n);
+                request_factorized(res);
             }
         }
 
@@ -1165,7 +1160,7 @@ namespace nlsat {
                 // No need for an additional coefficient witness in this case.
                 polynomial_ref witness = m_witnesses[i];
                 if (add_lc && witness && !is_const(witness))
-                    if (lc && !is_zero(lc) && sign(lc))
+                    if (lc && !is_zero(lc) && m_witness_subs_lc && sign(lc))
                         witness = polynomial_ref(m_pm);
 
                 add_projection_for_poly(p, m_level, witness, add_lc, add_disc);
@@ -1300,25 +1295,27 @@ namespace nlsat {
             collect_non_null_witnesses();
             add_adjacent_root_resultants();
 
-            // Projections (coeff witness, disc, leading coeff).
+            // Projection: witness, disc, lc
             for (unsigned i = 0; i < m_level_ps.size(); ++i) {
                 polynomial_ref p(m_level_ps.get(i), m_pm);
                 polynomial_ref lc(m_pm);
                 unsigned deg = m_pm.degree(p, m_n);
                 lc = m_pm.coeff(p, m_n, deg);
 
+                // Projective delineability optimization, Lemma 3.2 of "Projective Delineability
+                // for Single Cell Construction": if p is projectively delineable on R,
+                // ldcf(p)(s) != 0, and p has no real roots at s, then p is delineable on R
+                // without requiring sign-invariance of the leading coefficient.
+                // Projective delineability is ensured by adding the discriminant, Theorem 3.1,
+                // and non-nullification is ensured by the witness.
                 bool add_lc = true;  
-                if (!poly_has_roots(i))
-                    if (lc && !is_zero(lc) && sign(lc))
-                        add_lc = false;
+                if (!poly_has_roots(i) && lc && !is_zero(lc) && sign(lc)) {
+                    add_lc = false;
+                    polynomial_ref null_ref(m_pm);
+                    m_witnesses[i] = null_ref;
+                }
 
-                // if the leading coefficient is already non-zero at the sample
-                // AND we're adding lc, we do not need to project an additional non-null coefficient witness.
-                polynomial_ref witness = m_witnesses[i];
-                if (add_lc && witness && !is_const(witness))
-                    if (lc && !is_zero(lc) && sign(lc))
-                        witness = polynomial_ref(m_pm); // zero the witnsee as lc will be the witness
-                add_projection_for_poly(p, m_n, witness, add_lc, true); //true to add the discriminant
+                add_projection_for_poly(p, m_n, m_witnesses[i], add_lc, true); //true to add the discriminant
             }
         }
 
