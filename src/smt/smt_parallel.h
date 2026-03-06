@@ -120,8 +120,10 @@ namespace smt {
             // AriParti-style split-tracking helpers (thread-safe; called by workers).
             // Returns the 5-element key ordering for node n (initialises to [0..4] if absent).
             svector<unsigned> get_node_key_rank(node * n);
-            // Returns global split count for the given arithmetic expression.
-            unsigned get_var_split_cnt(expr * var);
+            // Returns global split count for the given local arithmetic expression.
+            // The translation l2g is performed under the mutex to avoid data races on
+            // the shared global ast_manager.
+            unsigned get_var_split_cnt(ast_translation& l2g, expr * local_var);
             // Computes the child key ordering from parent using AriParti's rotation rule.
             static svector<unsigned> compute_child_key_rank(svector<unsigned> const & parent);
 

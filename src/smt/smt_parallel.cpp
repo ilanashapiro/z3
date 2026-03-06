@@ -376,11 +376,13 @@ namespace smt {
         return it->second;
     }
 
-    unsigned parallel::batch_manager::get_var_split_cnt(expr * var) {
-        // Called from workers (no mutex held by caller).
+    unsigned parallel::batch_manager::get_var_split_cnt(ast_translation& l2g, expr * local_var) {
+        // Perform the local→global translation under the mutex so that no two workers
+        // concurrently modify the shared global ast_manager via their l2g translators.
         std::scoped_lock lock(mux);
+        expr * global_var = l2g(local_var);
         unsigned cnt = 0;
-        m_var_split_cnt.find(var, cnt);
+        m_var_split_cnt.find(global_var, cnt);
         return cnt;
     }
 
@@ -603,7 +605,7 @@ namespace smt {
             if (info.has_lo && info.has_up && info.lo >= info.up)
                 continue; // already fixed — nothing useful to split
 
-            unsigned split = b.get_var_split_cnt(m_l2g(term));
+            unsigned split = b.get_var_split_cnt(m_l2g, term);
             bool cz;
             if (info.has_lo && info.has_up)
                 cz = (info.lo <= rational::zero() && rational::zero() <= info.up);
