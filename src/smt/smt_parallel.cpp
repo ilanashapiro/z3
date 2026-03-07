@@ -144,13 +144,19 @@ namespace smt {
             case l_undef: {
                 update_max_thread_conflicts();
                 LOG_WORKER(1, " found undef cube\n");
+                // Terminate on Demand: if another worker already split this node,
+                // skip the redundant split attempt and get a fresh cube instead.
+                if (m_node_stale.exchange(false, std::memory_order_relaxed)) {
+                    LOG_WORKER(1, " ToD: node split by another worker, fetching new cube\n");
+                    break;
+                }
                 if (m_config.m_max_cube_depth <= cube.size())
                     goto check_cube_start;
 
                 auto atom = get_split_atom();
                 if (!atom)
                     goto check_cube_start;
-                b.split(m_l2g, id, node, atom);
+                b.split(m_l2g, node, atom);
                 simplify();
                 break;
             }
@@ -348,7 +354,7 @@ namespace smt {
         }
     }
 
-    void parallel::batch_manager::split(ast_translation &l2g, unsigned source_worker_id,
+    void parallel::batch_manager::split(ast_translation &l2g,
                                         search_tree::node<cube_config> *node, expr *atom) {
         std::scoped_lock lock(mux);
         expr_ref lit(m), nlit(m);
