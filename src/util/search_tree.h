@@ -19,7 +19,7 @@ Abstract:
 
     Backtracking on a conflict closes all nodes below the last node whose atom is in the conflict set.
 
-    Activation searches an open node closest to a seed node.
+    Activation selects open leaf nodes in FIFO creation order.
 
 Author:
 
@@ -29,6 +29,7 @@ Author:
 
 #include "util/util.h"
 #include "util/vector.h"
+#include <deque>
 #pragma once
 
 namespace search_tree {
@@ -129,28 +130,19 @@ namespace search_tree {
         typedef typename Config::literal literal;
         scoped_ptr<node<Config>> m_root = nullptr;
         literal m_null_literal;
-        random_gen m_rand;
+        std::deque<node<Config>*> m_open_leaf_fifo;
 
-        // return an active node in the subtree rooted at n, or nullptr if there is none
-        node<Config> *activate_from_root(node<Config> *n) {
-            if (!n)
-                return nullptr;
-            if (n->get_status() != status::open)
-                return nullptr;
-            auto left = n->left();
-            auto right = n->right();
-            if (!left && !right) {
+        node<Config>* activate_from_fifo() {
+            while (!m_open_leaf_fifo.empty()) {
+                node<Config>* n = m_open_leaf_fifo.front();
+                m_open_leaf_fifo.pop_front();
+                if (!n || n->get_status() != status::open)
+                    continue;
+                if (n->left() || n->right())
+                    continue;
                 n->set_status(status::active);
                 return n;
             }
-            node<Config> *nodes[2] = {left, right};
-            unsigned index = m_rand(2);
-            auto child = activate_from_root(nodes[index]);
-            if (child)
-                return child;
-            child = activate_from_root(nodes[1 - index]);
-            if (child)
-                return child;
             return nullptr;
         }
 
@@ -311,18 +303,26 @@ namespace search_tree {
         }
 
         void set_seed(unsigned seed) {
-            m_rand.set_seed(seed);
+            (void)seed;
         }
 
         void reset() {
             m_root = alloc(node<Config>, m_null_literal, nullptr);
             m_root->set_status(status::active);
+            m_open_leaf_fifo.clear();
         }
 
         // Split current node if it is active.
         // After the call, n is open and has two children.
         void split(node<Config> *n, literal const &a, literal const &b) {
+            bool can_split = n && n->get_status() == status::active && !n->left() && !n->right();
             n->split(a, b);
+            if (!can_split)
+                return;
+            if (n->left())
+                m_open_leaf_fifo.push_back(n->left());
+            if (n->right())
+                m_open_leaf_fifo.push_back(n->right());
         }
 
         // conflict is given by a set of literals.
@@ -360,44 +360,14 @@ namespace search_tree {
             UNREACHABLE();
         }
 
-        // return an active node in the tree, or nullptr if there is none
-        // first check if there is a node to activate under n,
-        // if not, go up the tree and try to activate a sibling subtree
+        // return an active node in the tree, or nullptr if there is none.
+        // Selection policy is FIFO over creation order of open leaf nodes.
         node<Config> *activate_node(node<Config> *n) {
-            if (!n) {
-                if (m_root->get_status() == status::active)
-                    return m_root.get();
-                n = m_root.get();
-            }
-            auto res = activate_from_root(n);
-            if (res)
-                return res;
-
-            auto p = n->parent();
-            while (p) {
-                if (p->left() && p->left()->get_status() == status::closed &&
-                    p->right() && p->right()->get_status() == status::closed) {
-                    if (p->get_status() != status::closed) 
-                        return nullptr; // inconsistent state
-                    n = p;
-                    p = n->parent();
-                    continue;
-                }
-                if (n == p->left()) {
-                    res = activate_from_root(p->right());
-                    if (res)
-                        return res;
-                }
-                else {
-                    VERIFY(n == p->right());
-                    res = activate_from_root(p->left());
-                    if (res)
-                        return res;
-                }
-                n = p;
-                p = n->parent();
-            }
-            return nullptr;
+            if (n && n->get_status() == status::active)
+                return n;
+            if (m_root->get_status() == status::active)
+                return m_root.get();
+            return activate_from_fifo();
         }
 
         node<Config> *find_active_node() {
