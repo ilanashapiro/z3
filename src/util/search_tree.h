@@ -29,6 +29,7 @@ Author:
 
 #include "util/util.h"
 #include "util/vector.h"
+#include <deque>
 #pragma once
 
 namespace search_tree {
@@ -130,6 +131,21 @@ namespace search_tree {
         scoped_ptr<node<Config>> m_root = nullptr;
         literal m_null_literal;
         random_gen m_rand;
+        std::deque<node<Config>*> m_open_leaf_fifo;
+
+        node<Config> *activate_from_frontier() {
+            while (!m_open_leaf_fifo.empty()) {
+                node<Config>* n = m_open_leaf_fifo.front();
+                m_open_leaf_fifo.pop_front();
+                if (!n || n->get_status() != status::open)
+                    continue;
+                if (n->left() || n->right())
+                    continue;
+                n->set_status(status::active);
+                return n;
+            }
+            return nullptr;
+        }
 
         // return an active node in the subtree rooted at n, or nullptr if there is none
         node<Config> *activate_from_root(node<Config> *n) {
@@ -317,12 +333,20 @@ namespace search_tree {
         void reset() {
             m_root = alloc(node<Config>, m_null_literal, nullptr);
             m_root->set_status(status::active);
+            m_open_leaf_fifo.clear();
         }
 
         // Split current node if it is active.
         // After the call, n is open and has two children.
         void split(node<Config> *n, literal const &a, literal const &b) {
+            bool can_split = n && n->get_status() == status::active && !n->left() && !n->right();
             n->split(a, b);
+            if (!can_split)
+                return;
+            if (n->left())
+                m_open_leaf_fifo.push_back(n->left());
+            if (n->right())
+                m_open_leaf_fifo.push_back(n->right());
         }
 
         // conflict is given by a set of literals.
@@ -364,6 +388,10 @@ namespace search_tree {
         // first check if there is a node to activate under n,
         // if not, go up the tree and try to activate a sibling subtree
         node<Config> *activate_node(node<Config> *n) {
+            if (n && n->get_status() == status::active)
+                return n;
+            if (auto s = activate_from_frontier())
+                return s;
             if (!n) {
                 if (m_root->get_status() == status::active)
                     return m_root.get();
