@@ -134,8 +134,8 @@ namespace smt {
             case l_undef: {
                 update_max_thread_conflicts();
                 LOG_WORKER(1, " found undef cube\n");
-                if (m_config.m_max_cube_depth <= cube.size())
-                    goto check_cube_start;
+                // if (m_config.m_max_cube_depth <= cube.size())
+                //     goto check_cube_start;
 
                 auto atom = get_split_atom();
                 if (!atom)
@@ -191,7 +191,6 @@ namespace smt {
         ctx->pop_to_base_lvl();
         m_num_shared_units = ctx->assigned_literals().size();
         m_num_initial_atoms = ctx->get_num_bool_vars();
-        ctx->get_fparams().m_preprocess = false;  // avoid preprocessing lemmas that are exchanged
 
         smt_parallel_params pp(p.ctx.m_params);
         m_config.m_inprocessing = pp.inprocessing();
@@ -220,7 +219,7 @@ namespace smt {
 
             if (m_config.m_share_units_initial_only && lit.var() >= m_num_initial_atoms) {
                 LOG_WORKER(4, " Skipping non-initial unit: " << lit.var() << "\n");
-                continue;  // skip non-initial atoms if configured to do so
+                continue;  // skip non-initial atoms if configured to do so. we must do this to avoid preprocessing lemmas that are exchanged by worker-specific preprocessing
             }
 
             expr_ref e(ctx->bool_var2expr(lit.var()), ctx->m);  // turn literal into a Boolean expression
@@ -532,6 +531,8 @@ namespace smt {
     void parallel::batch_manager::initialize() {
         m_state = state::is_running;
         m_search_tree.reset();
+        shared_clause_trail.reset();
+        shared_clause_set.reset();
     }
 
     void parallel::batch_manager::collect_statistics(::statistics &st) const {

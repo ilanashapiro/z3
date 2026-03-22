@@ -120,7 +120,7 @@ namespace smt {
                 bool m_share_units = true;
                 bool m_share_conflicts = true;
                 bool m_share_units_relevant_only = true;
-                bool m_share_units_initial_only = true;
+                bool m_share_units_initial_only = true; // must be TRUE to avoid preprocessing lemmas that are exchanged by worker-specific preprocessing
                 double m_max_conflict_mul = 1.5;
                 bool m_inprocessing = false;
                 bool m_sls = false;
