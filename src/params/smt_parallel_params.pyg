@@ -4,4 +4,9 @@ def_module_params('smt_parallel',
                   params=(
                         ('inprocessing', BOOL, False, 'integrate in-processing as a heuristic simplification'),
                         ('sls', BOOL, False, 'add sls-tactic as a separate worker thread outside the search tree parallelism'),
+                        ('node_selection_strategy', UINT, 0, 'node selection strategy: 0=locality, 1=hybrid, 2=conflict_driven, 3=adaptive'),
+                        ('hybrid_random_frequency', UINT, 10, 'for hybrid strategy: activate random branch every N attempts'),
+                        ('conflict_history_size', UINT, 20, 'number of recent conflict nodes to track for conflict-driven selection'),
+                        ('adaptive_sat_threshold', DOUBLE, 0.6, 'for adaptive strategy: SAT ratio threshold to switch to locality (0.0-1.0)'),
+                        ('adaptive_switch_interval', UINT, 50, 'for adaptive strategy: check and potentially switch strategy every N cubes'),
               ))

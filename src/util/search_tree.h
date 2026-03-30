@@ -130,6 +130,93 @@ namespace search_tree {
         scoped_ptr<node<Config>> m_root = nullptr;
         literal m_null_literal;
         random_gen m_rand;
+        
+        // Node selection strategy configuration
+        enum class selection_strategy { 
+            locality = 0,           // Original: closest to previous node
+            hybrid = 1,             // Locality with periodic random exploration
+            conflict_driven = 2,    // Avoid recently closed regions
+            adaptive = 3            // Switch between strategies based on metrics
+        };
+        
+        selection_strategy m_strategy = selection_strategy::locality;
+        unsigned m_hybrid_random_freq = 10;
+        unsigned m_activation_count = 0;
+        
+        // Conflict-driven strategy state
+        vector<node<Config>*> m_recent_closures;
+        unsigned m_conflict_history_size = 20;
+        
+        // Adaptive strategy state
+        double m_adaptive_sat_threshold = 0.6;
+        unsigned m_adaptive_switch_interval = 50;
+        unsigned m_cubes_solved = 0;
+        unsigned m_sat_count = 0;
+        unsigned m_unsat_count = 0;
+
+        // Helper: compute tree distance between two nodes (number of edges via LCA)
+        unsigned tree_distance(node<Config>* a, node<Config>* b) const {
+            if (!a || !b) return UINT_MAX;
+            if (a == b) return 0;
+            
+            // Find depths
+            unsigned depth_a = a->depth();
+            unsigned depth_b = b->depth();
+            
+            // Bring both to same depth
+            while (depth_a > depth_b) {
+                a = a->parent();
+                depth_a--;
+            }
+            while (depth_b > depth_a) {
+                b = b->parent();
+                depth_b--;
+            }
+            
+            // Move both up until they meet (LCA)
+            unsigned distance = 0;
+            while (a != b) {
+                a = a->parent();
+                b = b->parent();
+                distance += 2; // one edge up from each node
+            }
+            
+            return distance;
+        }
+        
+        // Helper: find distance to nearest conflict in history
+        unsigned min_distance_to_conflicts(node<Config>* n) const {
+            unsigned min_dist = UINT_MAX;
+            for (auto* closed : m_recent_closures) {
+                if (closed)
+                    min_dist = std::min(min_dist, tree_distance(n, closed));
+            }
+            return min_dist;
+        }
+        
+        // Helper: activate a random open leaf anywhere in the tree
+        node<Config>* activate_random_branch() {
+            return activate_from_root(m_root.get());
+        }
+        
+        // Helper: collect all open leaves for selection
+        void collect_open_leaves(node<Config>* n, vector<node<Config>*>& leaves) {
+            if (!n || n->get_status() == status::closed)
+                return;
+            
+            auto left = n->left();
+            auto right = n->right();
+            
+            // This is an open leaf
+            if (!left && !right) {
+                leaves.push_back(n);
+                return;
+            }
+            
+            // Recurse on children
+            if (left) collect_open_leaves(left, leaves);
+            if (right) collect_open_leaves(right, leaves);
+        }
 
         // return an active node in the subtree rooted at n, or nullptr if there is none
         node<Config> *activate_from_root(node<Config> *n) {
@@ -304,6 +391,82 @@ namespace search_tree {
                     res.push_back(lit);
             return res;
         }
+        
+        // Strategy: Hybrid (locality + periodic random exploration)
+        node<Config>* activate_node_hybrid(node<Config>* prev) {
+            m_activation_count++;
+            
+            // Every N attempts, explore a random distant branch
+            if (m_activation_count % m_hybrid_random_freq == 0) {
+                IF_VERBOSE(3, verbose_stream() << "Hybrid: random exploration (attempt " 
+                          << m_activation_count << ")\n");
+                return activate_random_branch();
+            }
+            
+            // Otherwise use standard locality strategy
+            return activate_node(prev);
+        }
+        
+        // Strategy: Conflict-driven (avoid recently closed regions)
+        node<Config>* activate_node_conflict_driven(node<Config>* prev) {
+            if (m_recent_closures.empty()) {
+                // No conflict history yet, fall back to locality
+                return activate_node(prev);
+            }
+            
+            // Collect all open leaves
+            vector<node<Config>*> open_leaves;
+            collect_open_leaves(m_root.get(), open_leaves);
+            
+            if (open_leaves.empty())
+                return nullptr;
+            
+            // Find the leaf with maximum distance from recent conflicts
+            node<Config>* best = nullptr;
+            unsigned max_dist = 0;
+            
+            for (auto* leaf : open_leaves) {
+                unsigned dist = min_distance_to_conflicts(leaf);
+                if (dist > max_dist) {
+                    max_dist = dist;
+                    best = leaf;
+                }
+            }
+            
+            if (best) {
+                best->set_status(status::active);
+                IF_VERBOSE(3, verbose_stream() << "Conflict-driven: selected node with distance " 
+                          << max_dist << " from conflicts\n");
+                return best;
+            }
+            
+            // Fall back to locality if something went wrong
+            return activate_node(prev);
+        }
+        
+        // Strategy: Adaptive (switch based on SAT/UNSAT ratio)
+        node<Config>* activate_node_adaptive(node<Config>* prev) {
+            // Check if it's time to reevaluate strategy
+            if (m_cubes_solved > 0 && m_cubes_solved % m_adaptive_switch_interval == 0) {
+                double sat_ratio = static_cast<double>(m_sat_count) / m_cubes_solved;
+                
+                IF_VERBOSE(2, verbose_stream() << "Adaptive: SAT ratio = " << sat_ratio 
+                          << " (" << m_sat_count << "/" << m_cubes_solved << ")\n");
+                
+                if (sat_ratio >= m_adaptive_sat_threshold) {
+                    // High SAT rate: use locality to maximize lemma reuse
+                    IF_VERBOSE(2, verbose_stream() << "Adaptive: switching to locality strategy\n");
+                    return activate_node(prev);
+                } else {
+                    // High UNSAT rate: use conflict-driven to avoid pruned regions
+                    IF_VERBOSE(2, verbose_stream() << "Adaptive: switching to conflict-driven strategy\n");
+                    return activate_node_conflict_driven(prev);
+                }
+            }
+            
+            // Default: use locality until we have enough data
+            return activate_node(prev);
+        }
 
     public:
         tree(literal const &null_literal) : m_null_literal(null_literal) {
@@ -328,6 +491,21 @@ namespace search_tree {
         // conflict is given by a set of literals.
         // they are subsets of the literals on the path from root to n AND the external assumption literals
         void backtrack(node<Config> *n, vector<literal> const &conflict) {
+            // Track this closure for conflict-driven strategy
+            if (n && m_strategy == selection_strategy::conflict_driven) {
+                m_recent_closures.push_back(n);
+                if (m_recent_closures.size() > m_conflict_history_size) {
+                    // Remove oldest entry (ring buffer behavior)
+                    m_recent_closures.erase(m_recent_closures.begin());
+                }
+            }
+            
+            // Update adaptive strategy counters (conflict = UNSAT)
+            if (m_strategy == selection_strategy::adaptive) {
+                m_cubes_solved++;
+                m_unsat_count++;
+            }
+            
             if (conflict.empty()) {
                 close_with_core(m_root.get(), conflict);
                 return;
@@ -399,6 +577,22 @@ namespace search_tree {
             }
             return nullptr;
         }
+        
+        // Main activation method with strategy dispatch
+        node<Config> *activate_node_with_strategy(node<Config> *n) {
+            switch (m_strategy) {
+                case selection_strategy::locality:
+                    return activate_node(n);
+                case selection_strategy::hybrid:
+                    return activate_node_hybrid(n);
+                case selection_strategy::conflict_driven:
+                    return activate_node_conflict_driven(n);
+                case selection_strategy::adaptive:
+                    return activate_node_adaptive(n);
+                default:
+                    return activate_node(n);
+            }
+        }
 
         node<Config> *find_active_node() {
             return m_root->find_active_node();
@@ -415,6 +609,46 @@ namespace search_tree {
         std::ostream &display(std::ostream &out) const {
             m_root->display(out, 0);
             return out;
+        }
+        
+        // Configuration methods for node selection strategies
+        void set_selection_strategy(unsigned strategy_id) {
+            switch (strategy_id) {
+                case 0: m_strategy = selection_strategy::locality; break;
+                case 1: m_strategy = selection_strategy::hybrid; break;
+                case 2: m_strategy = selection_strategy::conflict_driven; break;
+                case 3: m_strategy = selection_strategy::adaptive; break;
+                default: m_strategy = selection_strategy::locality; break;
+            }
+            IF_VERBOSE(1, verbose_stream() << "Node selection strategy set to " << strategy_id << "\n");
+        }
+        
+        void set_hybrid_random_frequency(unsigned freq) {
+            m_hybrid_random_freq = (freq > 0) ? freq : 10;
+        }
+        
+        void set_conflict_history_size(unsigned size) {
+            m_conflict_history_size = (size > 0) ? size : 20;
+            // Trim existing history if needed
+            while (m_recent_closures.size() > m_conflict_history_size) {
+                m_recent_closures.erase(m_recent_closures.begin());
+            }
+        }
+        
+        void set_adaptive_sat_threshold(double threshold) {
+            m_adaptive_sat_threshold = std::max(0.0, std::min(1.0, threshold));
+        }
+        
+        void set_adaptive_switch_interval(unsigned interval) {
+            m_adaptive_switch_interval = (interval > 0) ? interval : 50;
+        }
+        
+        // Track SAT result for adaptive strategy
+        void record_sat_result() {
+            if (m_strategy == selection_strategy::adaptive) {
+                m_cubes_solved++;
+                m_sat_count++;
+            }
         }
     };
 }  // namespace search_tree

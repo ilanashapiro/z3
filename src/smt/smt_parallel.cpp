@@ -442,6 +442,10 @@ namespace smt {
             return;
         m_state = state::is_sat;
         p.ctx.set_model(m.translate(l2g));
+        
+        // Track SAT result for adaptive strategy
+        m_search_tree.record_sat_result();
+        
         cancel_background_threads();
     }
 
@@ -511,7 +515,7 @@ namespace smt {
             IF_VERBOSE(1, verbose_stream() << "aborting get_cube\n";);
             return false;
         }
-        node *t = m_search_tree.activate_node(n);
+        node *t = m_search_tree.activate_node_with_strategy(n);
         if (!t)
             t = m_search_tree.find_active_node();
         if (!t)
@@ -532,6 +536,16 @@ namespace smt {
     void parallel::batch_manager::initialize() {
         m_state = state::is_running;
         m_search_tree.reset();
+        
+        // Configure node selection strategy from parameters
+        smt_parallel_params pp(p.ctx.m_params);
+        m_search_tree.set_selection_strategy(pp.node_selection_strategy());
+        m_search_tree.set_hybrid_random_frequency(pp.hybrid_random_frequency());
+        m_search_tree.set_conflict_history_size(pp.conflict_history_size());
+        m_search_tree.set_adaptive_sat_threshold(pp.adaptive_sat_threshold());
+        m_search_tree.set_adaptive_switch_interval(pp.adaptive_switch_interval());
+        
+        IF_VERBOSE(1, verbose_stream() << "Node selection strategy: " << pp.node_selection_strategy() << "\n");
     }
 
     void parallel::batch_manager::collect_statistics(::statistics &st) const {
