@@ -56,6 +56,13 @@ namespace smt {
             struct stats {
                 unsigned m_max_cube_depth = 0;
                 unsigned m_num_cubes = 0;
+                unsigned m_num_cores_reduced = 0;
+                unsigned m_total_core_reduction = 0;
+                unsigned m_num_cubes_preprocessed = 0;
+                unsigned m_num_contradictions_detected = 0;
+                unsigned m_num_literals_removed = 0;
+                unsigned m_num_cubes_unsat_via_preprocessing = 0;
+                unsigned m_total_solver_calls_avoided = 0;
             };
 
 
@@ -111,10 +118,16 @@ namespace smt {
             void collect_clause(ast_translation& l2g, unsigned source_worker_id, expr* clause);
             expr_ref_vector return_shared_clauses(ast_translation& g2l, unsigned& worker_limit, unsigned worker_id);
 
+            void aggregate_worker_stats(unsigned num_cores_reduced, unsigned total_core_reduction, 
+                                        unsigned num_cubes_preprocessed, unsigned num_contradictions_detected, 
+                                        unsigned num_literals_removed, unsigned num_cubes_unsat_via_preprocessing);
+
             lbool get_result() const;
         };
 
         class worker {
+            friend class parallel;  // Allow parallel class to access worker stats
+            
             struct config {
                 unsigned m_threads_max_conflicts = 1000;
                 bool m_share_units = true;
@@ -127,9 +140,21 @@ namespace smt {
                 unsigned m_inprocessing_delay = 1;
                 unsigned m_max_cube_depth = 20;
                 unsigned m_max_conflicts = UINT_MAX;
+                bool m_core_minimization = true;
+                bool m_cube_preprocessing = true;
             };
 
             using node = search_tree::node<cube_config>;
+
+            struct worker_stats {
+                unsigned m_num_cores_reduced = 0;
+                unsigned m_total_core_reduction = 0;
+                unsigned m_num_cubes_preprocessed = 0;
+                unsigned m_num_contradictions_detected = 0;
+                unsigned m_num_literals_removed = 0;
+                unsigned m_num_cubes_unsat_via_preprocessing = 0;  // Cubes proven UNSAT without check()
+                unsigned m_total_solver_calls_avoided = 0;          // Cumulative cubes avoided
+            };
 
             unsigned id; // unique identifier for the worker
             parallel& p;
@@ -138,9 +163,11 @@ namespace smt {
             expr_ref_vector asms;
             smt_params m_smt_params;
             config m_config;
+            worker_stats m_stats;
             random_gen m_rand;
             scoped_ptr<context> ctx;
             ast_translation m_g2l, m_l2g;
+            expr_ref_vector m_preprocess_unsat_core;
 
             unsigned m_num_shared_units = 0;
             unsigned m_num_initial_atoms = 0;
@@ -148,6 +175,7 @@ namespace smt {
             
             expr_ref get_split_atom();
 
+            lbool preprocess_cube(expr_ref_vector& cube);
             lbool check_cube(expr_ref_vector const& cube);
             void share_units();
 

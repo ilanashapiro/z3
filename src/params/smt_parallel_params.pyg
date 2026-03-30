@@ -4,4 +4,6 @@ def_module_params('smt_parallel',
                   params=(
                         ('inprocessing', BOOL, False, 'integrate in-processing as a heuristic simplification'),
                         ('sls', BOOL, False, 'add sls-tactic as a separate worker thread outside the search tree parallelism'),
+                        ('core_minimization', BOOL, False, 'use minimal unsat cores for stronger conflict generalization and pruning'),
+                        ('cube_preprocessing', BOOL, False, 'apply lightweight preprocessing to cubes before check (deduplication, contradiction detection)'),
               ))

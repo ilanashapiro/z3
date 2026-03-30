@@ -21,6 +21,7 @@ Author:
 #include "ast/ast_pp.h"
 #include "ast/ast_ll_pp.h"
 #include "ast/ast_translation.h"
+#include "ast/rewriter/bool_rewriter.h"
 #include "ast/simplifiers/then_simplifier.h"
 #include "smt/smt_parallel.h"
 #include "smt/smt_lookahead.h"
@@ -123,6 +124,30 @@ namespace smt {
 
         check_cube_start:
             LOG_WORKER(1, " CUBE SIZE IN MAIN LOOP: " << cube.size() << "\n");
+            
+            lbool preprocess_result = preprocess_cube(cube);
+            if (preprocess_result == l_false) {
+                // Preprocessing detected UNSAT cube without needing solver
+                if (m_preprocess_unsat_core.empty()) {
+                    // Safety check: should never happen but handle gracefully
+                    LOG_WORKER(1, " WARNING: preprocess returned UNSAT but core is empty, using full cube\n");
+                    m_preprocess_unsat_core.append(cube);
+                }
+                
+                m_stats.m_num_cubes_unsat_via_preprocessing++;
+                m_stats.m_total_solver_calls_avoided++;
+
+                LOG_WORKER(1, " found unsat cube via preprocessing (avoided solver call), core size: "
+                        << m_preprocess_unsat_core.size() << "\n");
+
+                b.backtrack(m_l2g, m_preprocess_unsat_core, node);
+
+                if (m_config.m_share_conflicts)
+                    b.collect_clause(m_l2g, id, mk_not(mk_and(m_preprocess_unsat_core)));
+
+                continue;
+            }
+            
             lbool r = check_cube(cube);
 
             if (!m.inc()) {
@@ -163,8 +188,45 @@ namespace smt {
                     return;
                 }
 
-                LOG_WORKER(1, " found unsat cube\n");
-                b.backtrack(m_l2g, unsat_core, node);
+                expr_ref_vector core_from_cube(m);
+                if (m_config.m_core_minimization) {
+                    // Partition unsat core into literals from cube vs external assumptions
+                    // core_from_cube = (unsat_core ∩ cube) ∪ (external assumptions in core)
+                    expr_ref_vector irrelevant_to_conflict(m);
+                    
+                    // Iterate through the cube directly (not asms, as cube literals were already removed from asms)
+                    for (expr* cube_lit : cube) {
+                        if (unsat_core.contains(cube_lit)) {
+                            core_from_cube.push_back(cube_lit);
+                        } else {
+                            irrelevant_to_conflict.push_back(cube_lit);
+                        }
+                    }
+                    
+                    // Add external assumptions that are in the core
+                    for (expr* e : unsat_core) {
+                        if (!core_from_cube.contains(e)) {
+                            core_from_cube.push_back(e);
+                        }
+                    }
+                    
+                    if (!irrelevant_to_conflict.empty()) {
+                        m_stats.m_num_cores_reduced++;
+                        m_stats.m_total_core_reduction += irrelevant_to_conflict.size();
+                        LOG_WORKER(1, " core minimized: removed " << irrelevant_to_conflict.size() 
+                                << " irrelevant literal(s) from cube of size " << cube.size() << "\n");
+                        LOG_WORKER(2, " literals not in minimal core:\n";
+                                for (auto a : irrelevant_to_conflict) verbose_stream() << mk_bounded_pp(a, m, 3) << "\n");
+                    }
+                } else {
+                    core_from_cube.append(unsat_core);
+                }
+
+                LOG_WORKER(1, " found unsat cube, minimal core size: " << core_from_cube.size() << "\n");
+                
+                // Backtrack with minimal core for stronger generalization
+                // This prunes all cubes containing the minimal core K
+                b.backtrack(m_l2g, core_from_cube, node);
 
                 if (m_config.m_share_conflicts)
                     b.collect_clause(m_l2g, id, mk_not(mk_and(unsat_core)));
@@ -179,7 +241,7 @@ namespace smt {
 
     parallel::worker::worker(unsigned id, parallel &p, expr_ref_vector const &_asms)
         : id(id), p(p), b(p.m_batch_manager), asms(m), m_smt_params(p.ctx.get_fparams()), m_g2l(p.ctx.m, m),
-          m_l2g(m, p.ctx.m) {
+          m_l2g(m, p.ctx.m), m_preprocess_unsat_core(m) {
         for (auto e : _asms)
             asms.push_back(m_g2l(e));
         LOG_WORKER(1, " created with " << asms.size() << " assumptions\n");
@@ -195,6 +257,8 @@ namespace smt {
 
         smt_parallel_params pp(p.ctx.m_params);
         m_config.m_inprocessing = pp.inprocessing();
+        m_config.m_core_minimization = pp.core_minimization();
+        m_config.m_cube_preprocessing = pp.cube_preprocessing();
     }
 
     parallel::sls_worker::sls_worker(parallel& p)
@@ -387,6 +451,121 @@ namespace smt {
         return result;
     }
 
+    lbool parallel::worker::preprocess_cube(expr_ref_vector& cube) {
+        if (!m_config.m_cube_preprocessing)
+            return l_undef;
+
+        m_preprocess_unsat_core.reset();
+
+        if (cube.empty())
+            return l_true;  // empty cube is trivially SAT
+
+        unsigned original_size = cube.size();
+        
+        // Save original cube in case we need to revert
+        expr_ref_vector original_cube(m);
+        original_cube.append(cube);
+        
+        bool changed = false;
+
+        // Store the ACTUAL literals (not just atoms!)
+        obj_map<expr, expr*> pos_lit; // atom -> positive literal
+        obj_map<expr, expr*> neg_lit; // atom -> negative literal
+
+        expr_ref_vector new_cube(m);
+        new_cube.reserve(cube.size());
+
+        for (expr* lit : cube) {
+            // false ⇒ UNSAT
+            if (m.is_false(lit)) {
+                m_preprocess_unsat_core.push_back(lit);
+                m_stats.m_num_cubes_preprocessed++;
+                m_stats.m_num_contradictions_detected++;
+                LOG_WORKER(1, " cube preprocessing detected UNSAT (false literal in cube)\n");
+                return l_false;
+            }
+
+            // true ⇒ drop
+            if (m.is_true(lit)) {
+                changed = true;
+                continue;
+            }
+
+            expr* atom = nullptr;
+            bool is_neg = m.is_not(lit, atom);
+            if (!is_neg)
+                atom = lit;
+
+            if (is_neg) {
+                // Check if we already saw x
+                if (pos_lit.contains(atom)) {
+                    m_preprocess_unsat_core.push_back(pos_lit.find(atom)); // x (original)
+                    m_preprocess_unsat_core.push_back(lit);                // ¬x
+                    m_stats.m_num_cubes_preprocessed++;
+                    m_stats.m_num_contradictions_detected++;
+                    LOG_WORKER(1, " cube preprocessing detected UNSAT (x and ¬x)\n");
+                    return l_false;
+                }
+
+                // Duplicate ¬x
+                if (neg_lit.contains(atom)) {
+                    changed = true;
+                    continue;
+                }
+
+                neg_lit.insert(atom, lit);
+            }
+            else {
+                // Check if we already saw ¬x
+                if (neg_lit.contains(atom)) {
+                    m_preprocess_unsat_core.push_back(lit);                // x
+                    m_preprocess_unsat_core.push_back(neg_lit.find(atom)); // ¬x (original)
+                    m_stats.m_num_cubes_preprocessed++;
+                    m_stats.m_num_contradictions_detected++;
+                    LOG_WORKER(1, " cube preprocessing detected UNSAT (x and ¬x)\n");
+                    return l_false;
+                }
+
+                // Duplicate x
+                if (pos_lit.contains(atom)) {
+                    changed = true;
+                    continue;
+                }
+
+                pos_lit.insert(atom, lit);
+            }
+
+            new_cube.push_back(lit);
+        }
+
+        // Replace cube if changed
+        if (new_cube.size() != cube.size()) {
+            cube.reset();
+            cube.append(new_cube);
+            changed = true;
+        }
+
+        if (changed) {
+            m_stats.m_num_cubes_preprocessed++;
+            if (cube.size() < original_size) {
+                unsigned literals_removed = original_size - cube.size();
+                m_stats.m_num_literals_removed += literals_removed;
+                LOG_WORKER(1, " cube preprocessing: removed " << literals_removed
+                        << " literal(s), reduced from " << original_size
+                        << " to " << cube.size() << "\n");
+            } else if (cube.size() > original_size) {
+                // This should not happen with our simple preprocessing
+                LOG_WORKER(2, " WARNING: cube preprocessing increased size from " 
+                           << original_size << " to " << cube.size() 
+                           << ", reverting\n");
+                cube.reset();
+                cube.append(original_cube);
+            }
+        }
+
+        return l_undef;
+    }
+
     lbool parallel::worker::check_cube(expr_ref_vector const &cube) {
         for (auto &atom : cube)
             asms.push_back(atom);
@@ -534,9 +713,27 @@ namespace smt {
         m_search_tree.reset();
     }
 
+    void parallel::batch_manager::aggregate_worker_stats(unsigned num_cores_reduced, unsigned total_core_reduction,
+                                                          unsigned num_cubes_preprocessed, unsigned num_contradictions_detected,
+                                                          unsigned num_literals_removed, unsigned num_cubes_unsat_via_preprocessing) {
+        std::scoped_lock lock(mux);
+        m_stats.m_num_cores_reduced += num_cores_reduced;
+        m_stats.m_total_core_reduction += total_core_reduction;
+        m_stats.m_num_cubes_preprocessed += num_cubes_preprocessed;
+        m_stats.m_num_contradictions_detected += num_contradictions_detected;
+        m_stats.m_num_literals_removed += num_literals_removed;
+        m_stats.m_num_cubes_unsat_via_preprocessing += num_cubes_unsat_via_preprocessing;
+    }
+
     void parallel::batch_manager::collect_statistics(::statistics &st) const {
         st.update("parallel-num_cubes", m_stats.m_num_cubes);
         st.update("parallel-max-cube-size", m_stats.m_max_cube_depth);
+        st.update("parallel-cores-reduced", m_stats.m_num_cores_reduced);
+        st.update("parallel-core-reduction-total", m_stats.m_total_core_reduction);
+        st.update("parallel-cubes-preprocessed", m_stats.m_num_cubes_preprocessed);
+        st.update("parallel-contradictions-detected", m_stats.m_num_contradictions_detected);
+        st.update("parallel-literals-removed", m_stats.m_num_literals_removed);
+        st.update("parallel-cubes-unsat-via-preprocessing", m_stats.m_num_cubes_unsat_via_preprocessing);
     }
 
     lbool parallel::operator()(expr_ref_vector const &asms) {
@@ -587,6 +784,18 @@ namespace smt {
         // Wait for all threads to finish
         for (auto &th : threads)
             th.join();
+
+        // Aggregate worker statistics into batch manager
+        for (auto w : m_workers) {
+            m_batch_manager.aggregate_worker_stats(
+                w->m_stats.m_num_cores_reduced,
+                w->m_stats.m_total_core_reduction,
+                w->m_stats.m_num_cubes_preprocessed,
+                w->m_stats.m_num_contradictions_detected,
+                w->m_stats.m_num_literals_removed,
+                w->m_stats.m_num_cubes_unsat_via_preprocessing
+            );
+        }
 
         for (auto w : m_workers)
             w->collect_statistics(ctx.m_aux_stats);
