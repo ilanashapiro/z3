@@ -539,7 +539,20 @@ namespace smt {
         
         // Configure node selection strategy from parameters
         smt_parallel_params pp(p.ctx.m_params);
+        
+        // ┌────────────────────┬──────────────────────────────────┬───────────────────────────┐
+        // │ Strategy           │ Best For                         │ Key Parameter             │
+        // ├────────────────────┼──────────────────────────────────┼───────────────────────────┤
+        // │ 0: Locality        │ SAT-heavy problems               │ None                      │
+        // ├────────────────────┼──────────────────────────────────┼───────────────────────────┤
+        // │ 1: Hybrid          │ Balanced workloads (recommended) │ hybrid_random_frequency   │
+        // ├────────────────────┼──────────────────────────────────┼───────────────────────────┤
+        // │ 2: Conflict-Driven │ UNSAT-heavy problems             │ conflict_history_size     │
+        // ├────────────────────┼──────────────────────────────────┼───────────────────────────┤
+        // │ 3: Adaptive        │ Unknown characteristics          │ adaptive_sat_threshold    │
+        // └────────────────────┴──────────────────────────────────┴───────────────────────────┘
         m_search_tree.set_selection_strategy(pp.node_selection_strategy());
+        
         m_search_tree.set_hybrid_random_frequency(pp.hybrid_random_frequency());
         m_search_tree.set_conflict_history_size(pp.conflict_history_size());
         m_search_tree.set_adaptive_sat_threshold(pp.adaptive_sat_threshold());
