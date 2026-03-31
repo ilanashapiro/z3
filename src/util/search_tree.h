@@ -163,6 +163,12 @@ namespace search_tree {
             return n->effort_spent() / std::max<uint64_t>(1, m_effort_unit);
         }
 
+        static node<Config>* lift_to_depth(node<Config>* n, unsigned depth) {
+            while (n && n->depth() > depth)
+                n = n->parent();
+            return n;
+        }
+
         bool better(candidate const& a, candidate const& b) const {
             if (!a.n)
                 return false;
@@ -419,6 +425,35 @@ namespace search_tree {
 
         void set_effort_unit(uint64_t effort_unit) {
             m_effort_unit = std::max<uint64_t>(1, effort_unit);
+        }
+
+        static bool is_ancestor(node<Config>* ancestor, node<Config>* n) {
+            if (!ancestor)
+                return false;
+            while (n) {
+                if (n == ancestor)
+                    return true;
+                n = n->parent();
+            }
+            return false;
+        }
+
+        node<Config>* deepest_cover(node<Config>* n, vector<literal> const& lits) const {
+            if (!n || lits.empty())
+                return m_root.get();
+            vector<bool> found(lits.size(), false);
+            unsigned remaining = lits.size();
+            for (node<Config>* cur = n; cur; cur = cur->parent()) {
+                for (unsigned i = 0; i < lits.size(); ++i) {
+                    if (!found[i] && cur->get_literal() == lits[i]) {
+                        found[i] = true;
+                        --remaining;
+                    }
+                }
+                if (remaining == 0)
+                    return cur;
+            }
+            return m_root.get();
         }
 
         void reset() {

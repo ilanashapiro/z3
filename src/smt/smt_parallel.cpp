@@ -21,6 +21,7 @@ Author:
 #include "ast/ast_pp.h"
 #include "ast/ast_ll_pp.h"
 #include "ast/ast_translation.h"
+#include "ast/for_each_expr.h"
 #include "ast/simplifiers/then_simplifier.h"
 #include "smt/smt_parallel.h"
 #include "smt/smt_lookahead.h"
@@ -63,6 +64,12 @@ namespace smt {
 #define LOG_WORKER(lvl, s) IF_VERBOSE(lvl, verbose_stream() << "Worker " << id << s)
 
 namespace smt {
+
+    static unsigned clause_num_literals(ast_manager& m, expr* e) {
+        if (m.is_or(e))
+            return to_app(e)->get_num_args();
+        return 1;
+    }
 
     void parallel::sls_worker::run() {
         ptr_vector<expr> assertions;
@@ -119,11 +126,11 @@ namespace smt {
                 LOG_WORKER(1, " no more cubes\n");
                 return;
             }
-            collect_shared_clauses();
+            collect_shared_clauses(node);
 
         check_cube_start:
             LOG_WORKER(1, " CUBE SIZE IN MAIN LOOP: " << cube.size() << "\n");
-            lbool r = check_cube(cube);
+            lbool r = check_cube(cube, node);
 
             if (!m.inc()) {
                 b.set_exception("context cancelled");
@@ -167,7 +174,7 @@ namespace smt {
                 b.backtrack(m_l2g, unsat_core, node);
 
                 if (m_config.m_share_conflicts)
-                    b.collect_clause(m_l2g, id, mk_not(mk_and(unsat_core)));
+                    b.collect_clause(m_l2g, id, b.current_scope(m_l2g, node, unsat_core), mk_not(mk_and(unsat_core)));
 
                 break;
             }
@@ -229,7 +236,7 @@ namespace smt {
 
             if (lit.sign())
                 e = m.mk_not(e);  // negate if literal is negative
-            b.collect_clause(m_l2g, id, e);
+            b.collect_clause(m_l2g, id, nullptr, e);
         }
         m_num_shared_units = sz;
     }
@@ -356,40 +363,119 @@ namespace smt {
         m_search_tree.split(node, lit, nlit, effort);
     }
 
-    void parallel::batch_manager::collect_clause(ast_translation &l2g, unsigned source_worker_id, expr *clause) {
+    parallel::batch_manager::node* parallel::batch_manager::current_scope(ast_translation& l2g, node* n, expr_ref_vector const& core) const {
+        if (!n || core.empty())
+            return nullptr;
+        vector<cube_config::literal> g_core;
+        for (auto* c : core)
+            g_core.push_back(expr_ref(l2g(c), m));
+        return m_search_tree.deepest_cover(n, g_core);
+    }
+
+    void parallel::batch_manager::collect_clause(ast_translation &l2g, unsigned source_worker_id, node* valid_at, expr *clause) {
         std::scoped_lock lock(mux);
         expr *g_clause = l2g(clause);
-        if (!shared_clause_set.contains(g_clause)) {
-            shared_clause_set.insert(g_clause);
-            shared_clause sc{source_worker_id, expr_ref(g_clause, m)};
-            shared_clause_trail.push_back(sc);
+        if (!g_clause)
+            return;
+
+        unsigned clause_size = clause_num_literals(m, g_clause);
+        unsigned term_size = get_num_exprs(g_clause);
+        bool is_unit = clause_size == 1;
+
+        if (!is_unit && clause_size > 8)
+            return;
+        if (term_size > 64)
+            return;
+
+        unsigned idx = 0;
+        if (shared_clause_index.find(g_clause, idx)) {
+            auto& sc = shared_clause_db[idx];
+            ++sc.score;
+            if (!valid_at || (sc.valid_at && search_tree::tree<cube_config>::is_ancestor(valid_at, sc.valid_at)))
+                sc.valid_at = valid_at;
+            sc.root_valid = sc.valid_at == nullptr;
+            return;
+        }
+        idx = shared_clause_db.size();
+        shared_clause_index.insert(g_clause, idx);
+        shared_clause sc(m);
+        sc.id = idx;
+        sc.source_worker_id = source_worker_id;
+        sc.clause = expr_ref(g_clause, m);
+        sc.valid_at = valid_at;
+        sc.score = 1;
+        sc.clause_size = clause_size;
+        sc.term_size = term_size;
+        sc.is_unit = is_unit;
+        sc.root_valid = valid_at == nullptr;
+        shared_clause_db.push_back(sc);
+    }
+
+    void parallel::worker::collect_shared_clauses(node* current_node) {
+        vector<local_shared_clause> fresh;
+        b.return_shared_clauses(m_g2l, id, current_node, m_known_shared_clause_ids, fresh);
+        for (auto& sc : fresh) {
+            if (m_known_shared_clause_ids.contains(sc.id))
+                continue;
+            m_known_shared_clause_ids.insert(sc.id);
+            m_shared_clauses.push_back(sc);
+            LOG_WORKER(4, " caching shared clause: " << mk_bounded_pp(sc.clause, m, 3) << "\n");
         }
     }
 
-    void parallel::worker::collect_shared_clauses() {
-        expr_ref_vector new_clauses = b.return_shared_clauses(m_g2l, m_shared_clause_limit, id);
-        // iterate over new clauses and assert them in the local context
-        for (expr *e : new_clauses) {
-            ctx->assert_expr(e);
-            LOG_WORKER(4, " asserting shared clause: " << mk_bounded_pp(e, m, 3) << "\n");
+    void parallel::worker::append_applicable_shared_clauses(node* current_node, expr_ref_vector& target) {
+        for (auto const& sc : m_shared_clauses) {
+            if (!sc.root_valid && !search_tree::tree<cube_config>::is_ancestor(sc.valid_at, current_node))
+                continue;
+            target.push_back(sc.clause);
         }
     }
 
-    expr_ref_vector parallel::batch_manager::return_shared_clauses(ast_translation &g2l, unsigned &worker_limit,
-                                                                   unsigned worker_id) {
+    void parallel::batch_manager::return_shared_clauses(ast_translation &g2l, unsigned worker_id, node* current_node,
+                                                        uint_set const& known_ids, vector<local_shared_clause>& result) {
         std::scoped_lock lock(mux);
-        expr_ref_vector result(g2l.to());
-        for (unsigned i = worker_limit; i < shared_clause_trail.size(); ++i) {
-            if (shared_clause_trail[i].source_worker_id != worker_id)
-                result.push_back(g2l(shared_clause_trail[i].clause.get()));
+        svector<unsigned> candidates;
+        for (unsigned i = 0; i < shared_clause_db.size(); ++i) {
+            auto const& sc = shared_clause_db[i];
+            if (sc.source_worker_id == worker_id || known_ids.contains(sc.id))
+                continue;
+            if (!sc.root_valid && !search_tree::tree<cube_config>::is_ancestor(sc.valid_at, current_node))
+                continue;
+            candidates.push_back(i);
         }
-        worker_limit = shared_clause_trail.size();  // update the worker limit to the end of the current trail
-        return result;
+        std::stable_sort(candidates.begin(), candidates.end(), [&](unsigned i, unsigned j) {
+            auto const& a = shared_clause_db[i];
+            auto const& b = shared_clause_db[j];
+            if (a.is_unit != b.is_unit)
+                return a.is_unit;
+            if (a.score != b.score)
+                return a.score > b.score;
+            if (a.clause_size != b.clause_size)
+                return a.clause_size < b.clause_size;
+            if (a.term_size != b.term_size)
+                return a.term_size < b.term_size;
+            unsigned da = a.valid_at ? a.valid_at->depth() : 0;
+            unsigned db = b.valid_at ? b.valid_at->depth() : 0;
+            return da > db;
+        });
+        unsigned limit = 32;
+        for (unsigned i = 0; i < candidates.size() && i < limit; ++i) {
+            auto const& sc = shared_clause_db[candidates[i]];
+            local_shared_clause lc(g2l.to());
+            lc.id = sc.id;
+            lc.clause = expr_ref(g2l(sc.clause.get()), g2l.to());
+            lc.valid_at = sc.valid_at;
+            lc.score = sc.score;
+            lc.root_valid = sc.root_valid;
+            result.push_back(lc);
+        }
     }
 
-    lbool parallel::worker::check_cube(expr_ref_vector const &cube) {
+    lbool parallel::worker::check_cube(expr_ref_vector const &cube, node* current_node) {
+        unsigned old_size = asms.size();
         for (auto &atom : cube)
             asms.push_back(atom);
+        append_applicable_shared_clauses(current_node, asms);
         lbool r = l_undef;
 
         ctx->get_fparams().m_max_conflicts = std::min(m_config.m_threads_max_conflicts, m_config.m_max_conflicts);
@@ -406,7 +492,7 @@ namespace smt {
         } catch (...) {
             b.set_exception("unknown exception");
         }
-        asms.shrink(asms.size() - cube.size());
+        asms.shrink(asms.size() - old_size);
         LOG_WORKER(1, " DONE checking cube " << r << "\n";);
         return r;
     }

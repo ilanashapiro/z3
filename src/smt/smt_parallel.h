@@ -20,6 +20,7 @@ Revision History:
 
 #include "smt/smt_context.h"
 #include "util/search_tree.h"
+#include "util/uint_set.h"
 #include "ast/sls/sls_smt_solver.h"
 #include <thread>
 #include <mutex>
@@ -39,8 +40,25 @@ namespace smt {
         bool m_should_run_sls = false;
 
         struct shared_clause {
+            unsigned id = 0;
             unsigned source_worker_id;
             expr_ref clause;
+            search_tree::node<cube_config>* valid_at = nullptr;
+            unsigned score = 0;
+            unsigned clause_size = 0;
+            unsigned term_size = 0;
+            bool is_unit = false;
+            bool root_valid = false;
+            shared_clause(ast_manager& m): source_worker_id(0), clause(m) {}
+        };
+
+        struct local_shared_clause {
+            unsigned id = 0;
+            expr_ref clause;
+            search_tree::node<cube_config>* valid_at = nullptr;
+            unsigned score = 0;
+            bool root_valid = false;
+            local_shared_clause(ast_manager& m): clause(m) {}
         };
 
         class batch_manager {        
@@ -69,8 +87,8 @@ namespace smt {
             
             unsigned m_exception_code = 0;
             std::string m_exception_msg;
-            vector<shared_clause> shared_clause_trail; // store all shared clauses with worker IDs
-            obj_hashtable<expr> shared_clause_set; // for duplicate filtering on per-thread clause expressions
+            vector<shared_clause> shared_clause_db;
+            obj_map<expr, unsigned> shared_clause_index;
 
             // called from batch manager to cancel other workers if we've reached a verdict
             void cancel_workers() {
@@ -107,9 +125,10 @@ namespace smt {
             bool get_cube(ast_translation& g2l, unsigned id, expr_ref_vector& cube, node*& n);
             void backtrack(ast_translation& l2g, expr_ref_vector const& core, node* n);
             void split(ast_translation& l2g, unsigned id, node* n, expr* atom, uint64_t effort);
+            node* current_scope(ast_translation& l2g, node* n, expr_ref_vector const& core) const;
 
-            void collect_clause(ast_translation& l2g, unsigned source_worker_id, expr* clause);
-            expr_ref_vector return_shared_clauses(ast_translation& g2l, unsigned& worker_limit, unsigned worker_id);
+            void collect_clause(ast_translation& l2g, unsigned source_worker_id, node* valid_at, expr* clause);
+            void return_shared_clauses(ast_translation& g2l, unsigned worker_id, node* current_node, uint_set const& known_ids, vector<local_shared_clause>& result);
 
             lbool get_result() const;
         };
@@ -121,6 +140,9 @@ namespace smt {
                 bool m_share_conflicts = true;
                 bool m_share_units_relevant_only = true;
                 bool m_share_units_initial_only = true;
+                unsigned m_clause_share_batch = 32;
+                unsigned m_clause_share_max_lits = 8;
+                unsigned m_clause_share_max_term_size = 64;
                 double m_max_conflict_mul = 1.5;
                 bool m_inprocessing = false;
                 bool m_sls = false;
@@ -144,13 +166,16 @@ namespace smt {
 
             unsigned m_num_shared_units = 0;
             unsigned m_num_initial_atoms = 0;
-            unsigned m_shared_clause_limit = 0; // remembers the index into shared_clause_trail marking the boundary between "old" and "new" clauses to share
             uint64_t m_last_check_effort = 1;
+            uint_set m_known_shared_clause_ids;
+            vector<local_shared_clause> m_shared_clauses;
             
             expr_ref get_split_atom();
 
-            lbool check_cube(expr_ref_vector const& cube);
+            lbool check_cube(expr_ref_vector const& cube, node* current_node);
             void share_units();
+            void collect_shared_clauses(node* current_node);
+            void append_applicable_shared_clauses(node* current_node, expr_ref_vector& target);
 
             void update_max_thread_conflicts() {
                 m_config.m_threads_max_conflicts = (unsigned)(m_config.m_max_conflict_mul * m_config.m_threads_max_conflicts);
@@ -161,8 +186,6 @@ namespace smt {
         public:
             worker(unsigned id, parallel& p, expr_ref_vector const& _asms);
             void run();
-            
-            void collect_shared_clauses();
 
             void cancel();
             void collect_statistics(::statistics& st) const;
