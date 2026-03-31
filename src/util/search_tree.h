@@ -439,6 +439,35 @@ namespace search_tree {
             m_effort_unit = std::max<unsigned>(1, effort_unit);
         }
 
+        static bool is_ancestor(node<Config>* ancestor, node<Config>* n) {
+            if (!ancestor)
+                return false;
+            while (n) {
+                if (n == ancestor)
+                    return true;
+                n = n->parent();
+            }
+            return false;
+        }
+
+        node<Config>* deepest_cover(node<Config>* n, vector<literal> const& lits) const {
+            if (!n || lits.empty())
+                return m_root.get();
+            vector<bool> found(lits.size(), false);
+            unsigned remaining = lits.size();
+            for (node<Config>* cur = n; cur; cur = cur->parent()) {
+                for (unsigned i = 0; i < lits.size(); ++i) {
+                    if (!found[i] && cur->get_literal() == lits[i]) {
+                        found[i] = true;
+                        --remaining;
+                    }
+                }
+                if (remaining == 0)
+                    return cur;
+            }
+            return m_root.get();
+        }
+
         void reset() {
             m_root = alloc(node<Config>, m_null_literal, nullptr);
             m_root->mark_new_activation();
