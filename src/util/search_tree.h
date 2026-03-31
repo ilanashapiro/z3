@@ -509,23 +509,34 @@ namespace search_tree {
                 return;
             }
             SASSERT(n != m_root.get());
-            // all literals in conflict are on the path from root to n
-            // remove assumptions from conflict to ensure this.
-            DEBUG_CODE(auto on_path =
-                           [&](literal const &a) {
-                               node<Config> *p = n;
-                               while (p) {
-                                   if (p->get_literal() == a)
-                                       return true;
-                                   p = p->parent();
-                               }
-                               return false;
-                           };
-                       SASSERT(all_of(conflict, [&](auto const &a) { return on_path(a); })););
+            
+            // Helper to check if a literal is on the path from root to n
+            auto on_path = [&](literal const &a) {
+                node<Config> *p = n;
+                while (p) {
+                    if (p->get_literal() == a)
+                        return true;
+                    p = p->parent();
+                }
+                return false;
+            };
+            
+            // Filter conflict to only include literals on the path (remove assumption literals)
+            vector<literal> path_conflict;
+            for (auto const& lit : conflict) {
+                if (on_path(lit))
+                    path_conflict.push_back(lit);
+            }
+            
+            // If all conflict literals were assumptions (not on path), close root with full conflict
+            if (path_conflict.empty()) {
+                close_with_core(m_root.get(), conflict);
+                return;
+            }
 
             // Walk upward to find the nearest ancestor whose decision participates in the conflict
             while (n) {
-                if (any_of(conflict, [&](auto const &a) { return a == n->get_literal(); })) {
+                if (any_of(path_conflict, [&](auto const &a) { return a == n->get_literal(); })) {
                     // close the subtree under n (preserves core attached to n), and attempt to resolve upwards
                     close_with_core(n, conflict);
                     return;
