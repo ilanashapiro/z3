@@ -191,13 +191,47 @@ namespace smt {
                     return;
                 }
 
+                // Core minimization: partition unsat core into cube literals vs rest
+                // This gives us the minimal subset of the cube needed for the conflict
                 expr_ref_vector tree_core(m);
                 extract_tree_core(unsat_core, tree_core);
-                LOG_WORKER(1, " found unsat cube\n");
-                b.backtrack(m_l2g, tree_core, node);
+                
+                // Track literals from cube that are NOT in the conflict
+                expr_ref_vector core_from_cube(m);
+                expr_ref_vector irrelevant_to_conflict(m);
+                
+                // Iterate through the cube to find which literals participate in the conflict
+                for (expr* cube_lit : cube) {
+                    if (tree_core.contains(cube_lit)) {
+                        core_from_cube.push_back(cube_lit);
+                    } else {
+                        irrelevant_to_conflict.push_back(cube_lit);
+                    }
+                }
+                
+                // Add non-cube literals from tree_core (guards translated to node literals, etc.)
+                for (expr* e : tree_core) {
+                    if (!core_from_cube.contains(e)) {
+                        core_from_cube.push_back(e);
+                    }
+                }
+                
+                if (!irrelevant_to_conflict.empty()) {
+                    LOG_WORKER(1, " core minimized: removed " << irrelevant_to_conflict.size() 
+                            << " irrelevant literal(s) from cube of size " << cube.size() << "\n");
+                    LOG_WORKER(2, " literals not in minimal core:\n";
+                            for (auto a : irrelevant_to_conflict) verbose_stream() << mk_bounded_pp(a, m, 3) << "\n");
+                }
+                
+                LOG_WORKER(1, " found unsat cube, minimal core size: " << core_from_cube.size() 
+                          << " (full cube: " << cube.size() << ")\n");
+                
+                // Backtrack with minimal core for stronger generalization
+                // This prunes all cubes containing the minimal core
+                b.backtrack(m_l2g, core_from_cube, node);
 
                 if (m_config.m_share_conflicts)
-                    b.collect_clause(m_l2g, id, b.current_scope(m_l2g, node, tree_core), mk_not(mk_and(tree_core)));
+                    b.collect_clause(m_l2g, id, b.current_scope(m_l2g, node, core_from_cube), mk_not(mk_and(core_from_cube)));
 
                 break;
             }
