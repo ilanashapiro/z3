@@ -22,6 +22,7 @@ Revision History:
 #include "util/search_tree.h"
 #include "util/uint_set.h"
 #include "ast/sls/sls_smt_solver.h"
+#include <unordered_map>
 #include <thread>
 #include <mutex>
 
@@ -55,10 +56,11 @@ namespace smt {
         struct local_shared_clause {
             unsigned id = 0;
             expr_ref clause;
+            expr_ref guard;
             search_tree::node<cube_config>* valid_at = nullptr;
             unsigned score = 0;
             bool root_valid = false;
-            local_shared_clause(ast_manager& m): clause(m) {}
+            local_shared_clause(ast_manager& m): clause(m), guard(m) {}
         };
 
         class batch_manager {        
@@ -158,6 +160,7 @@ namespace smt {
             batch_manager& b;
             ast_manager m;
             expr_ref_vector asms;
+            expr_ref_vector m_active_clause_guards;
             smt_params m_smt_params;
             config m_config;
             random_gen m_rand;
@@ -169,13 +172,18 @@ namespace smt {
             uint64_t m_last_check_effort = 1;
             uint_set m_known_shared_clause_ids;
             vector<local_shared_clause> m_shared_clauses;
+            std::unordered_map<node*, expr_ref> m_node_guards;
+            obj_map<expr, node*> m_guard_to_node;
             
             expr_ref get_split_atom();
+            expr_ref get_or_create_guard(node* n);
+            bool is_guard(expr* e, node*& n) const;
+            void extract_tree_core(expr_ref_vector const& unsat_core, expr_ref_vector& tree_core);
 
             lbool check_cube(expr_ref_vector const& cube, node* current_node);
-            void share_units();
+            void share_units(node* current_node);
             void collect_shared_clauses(node* current_node);
-            void append_applicable_shared_clauses(node* current_node, expr_ref_vector& target);
+            void append_active_clause_guards(node* current_node, expr_ref_vector& target);
 
             void update_max_thread_conflicts() {
                 m_config.m_threads_max_conflicts = (unsigned)(m_config.m_max_conflict_mul * m_config.m_threads_max_conflicts);
