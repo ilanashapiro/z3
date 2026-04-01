@@ -162,30 +162,54 @@ namespace smt {
                 expr_ref_vector const &unsat_core = ctx->unsat_core();
                 LOG_WORKER(2, " unsat core:\n";
                            for (auto c : unsat_core) verbose_stream() << mk_bounded_pp(c, m, 3) << "\n");
-                // If the unsat core only contains external assumptions,
-                // unsatisfiability does not depend on the current cube and the entire problem is unsat.
-                if (all_of(unsat_core, [&](expr *e) { return asms.contains(e); })) {
+                // If the unsat core only contains original (external) assumptions,
+                // then UNSAT does not depend on the cube → global UNSAT.
+                //
+                // If the UNSAT core contains:
+                //   - cube literals → conflict depends on the cube
+                //   - guards        → conflict depends on subtree-scoped clauses → also cube-dependent
+                //
+                // check_asms = [ original assumptions | cube literals | guard switches ]
+                //
+                // For global UNSAT, the core must contain ONLY original assumptions.
+                bool is_global_unsat = all_of(unsat_core, [&](expr* e) {
+                    // must be an original assumption (not cube literal, not guard)
+                    if (!asms.contains(e))
+                        return false;
+
+                    // must NOT be a guard (guards are control variables, not logical assumptions)
+                    search_tree::node<cube_config>* tmp = nullptr;
+                    if (is_guard(e, tmp))
+                        return false;
+
+                    return true;
+                });
+
+                if (is_global_unsat) {
                     LOG_WORKER(1, " determined formula unsat\n");
                     b.set_unsat(m_l2g, unsat_core);
                     return;
                 }
 
+                expr_ref_vector tree_core(m);
+                extract_tree_core(unsat_core, tree_core);
                 LOG_WORKER(1, " found unsat cube\n");
-                b.backtrack(m_l2g, unsat_core, node);
+                b.backtrack(m_l2g, tree_core, node);
 
                 if (m_config.m_share_conflicts)
-                    b.collect_clause(m_l2g, id, b.current_scope(m_l2g, node, unsat_core), mk_not(mk_and(unsat_core)));
+                    b.collect_clause(m_l2g, id, b.current_scope(m_l2g, node, tree_core), mk_not(mk_and(tree_core)));
 
                 break;
             }
             }
             if (m_config.m_share_units)
-                share_units();
+                share_units(node);
         }
     }
 
     parallel::worker::worker(unsigned id, parallel &p, expr_ref_vector const &_asms)
-        : id(id), p(p), b(p.m_batch_manager), asms(m), m_smt_params(p.ctx.get_fparams()), m_g2l(p.ctx.m, m),
+        : id(id), p(p), b(p.m_batch_manager), asms(m), m_active_clause_guards(m),
+          m_smt_params(p.ctx.get_fparams()), m_g2l(p.ctx.m, m),
           m_l2g(m, p.ctx.m) {
         for (auto e : _asms)
             asms.push_back(m_g2l(e));
@@ -204,6 +228,80 @@ namespace smt {
         m_config.m_inprocessing = pp.inprocessing();
     }
 
+    // Return a Boolean "guard" literal associated with a search-tree node.
+    // Guards are fresh Boolean constants used to *label* clauses coming from a node,
+    // so that if such a clause participates in an UNSAT core, we can map it back
+    // to the originating node (scope) in the search tree.
+    expr_ref parallel::worker::get_or_create_guard(node* n) {
+        // Check if we already created a guard for this node.
+        auto it = m_node_guards.find(n);
+        if (it != m_node_guards.end())
+            return it->second;
+
+        // Otherwise create a fresh Boolean constant named "pshare".
+        // (mk_fresh_const ensures uniqueness even with same base name)
+        symbol name(symbol("pshare"));
+        expr_ref g(m.mk_fresh_const(name, m.mk_bool_sort()), m);
+
+        // Store bidirectional mappings:
+        // node -> guard
+        m_node_guards.emplace(n, g);
+        // guard -> node
+        m_guard_to_node.insert(g, n);
+
+        return g;
+    }
+
+    // Check whether expression `e` is a guard literal.
+    // If yes, return true and output the associated node in `n`.
+    bool parallel::worker::is_guard(expr* e, node*& n) const {
+        return m_guard_to_node.find(e, n);
+    }
+
+    // Extract a "tree core" from the solver's UNSAT core.
+    // The goal is to translate the UNSAT core (which may include guards)
+    // into a set of literals that correspond to the search tree,
+    // so batch_manager::backtrack can operate correctly.
+    void parallel::worker::extract_tree_core(expr_ref_vector const& unsat_core,
+                                            expr_ref_vector& tree_core) {
+        tree_core.reset();
+
+        for (expr* e : unsat_core) {
+
+            // Skip original assumptions.
+            // These indicate global UNSAT and should not contribute to tree backtracking.
+            if (asms.contains(e))
+                continue;
+
+            node* scope = nullptr;
+
+            // Case 1: e is a guard literal.
+            if (is_guard(e, scope)) {
+
+                // Guards encode "this clause came from node `scope`".
+                // So we translate the guard back into the node's branching literal.
+                if (scope && !cube_config::literal_is_null(scope->get_literal())) {
+
+                    // Convert the node's literal from global → local context.
+                    expr_ref lit(m_g2l(scope->get_literal().get()), m);
+
+                    // Add it to the tree core if not already present.
+                    if (!tree_core.contains(lit))
+                        tree_core.push_back(lit);
+                }
+
+                // Do NOT include the guard itself in the core.
+                continue;
+            }
+
+            // Case 2: e is a regular literal (not an assumption, not a guard).
+            // This can happen if the solver returns theory literals or derived atoms.
+            // We include them directly in the tree core.
+            if (!tree_core.contains(e))
+                tree_core.push_back(e);
+        }
+    }
+
     parallel::sls_worker::sls_worker(parallel& p)
         : p(p), b(p.m_batch_manager), m(), m_g2l(p.ctx.m, m), m_l2g(m, p.ctx.m) {
         IF_VERBOSE(1, verbose_stream() << "Initialized SLS portfolio thread\n");
@@ -211,7 +309,7 @@ namespace smt {
         m_sls = alloc(sls::smt_solver, m, m_params);
     }
 
-    void parallel::worker::share_units() {
+    void parallel::worker::share_units(node* current_node) {
         // Collect new units learned locally by this worker and send to batch manager
         
         unsigned sz = ctx->assigned_literals().size();
@@ -236,7 +334,9 @@ namespace smt {
 
             if (lit.sign())
                 e = m.mk_not(e);  // negate if literal is negative
-            b.collect_clause(m_l2g, id, nullptr, e);
+            
+            // Use current_node instead of nullptr to properly scope the unit
+            b.collect_clause(m_l2g, id, current_node, e);
         }
         m_num_shared_units = sz;
     }
@@ -419,16 +519,27 @@ namespace smt {
             if (m_known_shared_clause_ids.contains(sc.id))
                 continue;
             m_known_shared_clause_ids.insert(sc.id);
+            if (sc.root_valid) {
+                ctx->assert_expr(sc.clause);
+            }
+            else {
+                sc.guard = get_or_create_guard(sc.valid_at);
+                expr_ref guarded(m.mk_or(m.mk_not(sc.guard), sc.clause), m);
+                ctx->assert_expr(guarded);
+            }
             m_shared_clauses.push_back(sc);
             LOG_WORKER(4, " caching shared clause: " << mk_bounded_pp(sc.clause, m, 3) << "\n");
         }
     }
 
-    void parallel::worker::append_applicable_shared_clauses(node* current_node, expr_ref_vector& target) {
+    void parallel::worker::append_active_clause_guards(node* current_node, expr_ref_vector& target) {
         for (auto const& sc : m_shared_clauses) {
-            if (!sc.root_valid && !search_tree::tree<cube_config>::is_ancestor(sc.valid_at, current_node))
+            if (sc.root_valid)
                 continue;
-            target.push_back(sc.clause);
+            if (!search_tree::tree<cube_config>::is_ancestor(sc.valid_at, current_node))
+                continue;
+            if (!target.contains(sc.guard))
+                target.push_back(sc.guard);
         }
     }
 
@@ -473,10 +584,14 @@ namespace smt {
     }
 
     lbool parallel::worker::check_cube(expr_ref_vector const &cube, node* current_node) {
-        unsigned old_size = asms.size();
+        expr_ref_vector check_asms(m);
+        check_asms.append(asms);
         for (auto &atom : cube)
-            asms.push_back(atom);
-        append_applicable_shared_clauses(current_node, asms);
+            check_asms.push_back(atom);
+
+        m_active_clause_guards.reset();
+        append_active_clause_guards(current_node, m_active_clause_guards);
+        check_asms.append(m_active_clause_guards);
         lbool r = l_undef;
 
         ctx->get_fparams().m_max_conflicts = std::min(m_config.m_threads_max_conflicts, m_config.m_max_conflicts);
@@ -484,7 +599,7 @@ namespace smt {
                                        << bounded_pp_exprs(cube)
                                        << "with max_conflicts: " << ctx->get_fparams().m_max_conflicts << "\n";);
         try {
-            r = ctx->check(asms.size(), asms.data());
+            r = ctx->check(check_asms.size(), check_asms.data());
         } catch (z3_error &err) {
             b.set_exception(err.error_code());
         } catch (z3_exception &ex) {
@@ -492,7 +607,6 @@ namespace smt {
         } catch (...) {
             b.set_exception("unknown exception");
         }
-        asms.shrink(asms.size() - old_size);
         LOG_WORKER(1, " DONE checking cube " << r << "\n";);
         return r;
     }
