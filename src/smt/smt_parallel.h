@@ -76,6 +76,8 @@ namespace smt {
             struct stats {
                 unsigned m_max_cube_depth = 0;
                 unsigned m_num_cubes = 0;
+                unsigned m_num_cores_reduced = 0;       // Total cores that were minimized
+                unsigned m_total_literals_removed = 0;  // Total literals removed
             };
 
 
@@ -123,6 +125,13 @@ namespace smt {
             void set_exception(std::string const& msg);
             void set_exception(unsigned error_code);
             void collect_statistics(::statistics& st) const;
+            
+            // Aggregate worker statistics
+            void add_core_minimization_stats(unsigned cores_reduced, unsigned literals_removed) {
+                std::scoped_lock lock(mux);
+                m_stats.m_num_cores_reduced += cores_reduced;
+                m_stats.m_total_literals_removed += literals_removed;
+            }
 
             bool get_cube(ast_translation& g2l, unsigned id, expr_ref_vector& cube, node*& n);
             void backtrack(ast_translation& l2g, expr_ref_vector const& core, node* n);
@@ -175,6 +184,10 @@ namespace smt {
             std::unordered_map<node*, expr_ref> m_node_guards;
             obj_map<expr, node*> m_guard_to_node;
             
+            // Core minimization statistics
+            unsigned m_num_cores_reduced = 0;           // How many cores were successfully minimized
+            unsigned m_total_literals_removed = 0;      // Total literals removed across all minimizations
+            
             expr_ref get_split_atom();
             expr_ref get_or_create_guard(node* n);
             bool is_guard(expr* e, node*& n) const;
@@ -197,6 +210,10 @@ namespace smt {
 
             void cancel();
             void collect_statistics(::statistics& st) const;
+
+            // Statistics accessors for aggregation
+            unsigned get_num_cores_reduced() const { return m_num_cores_reduced; }
+            unsigned get_total_literals_removed() const { return m_total_literals_removed; }
 
             reslimit& limit() {
                 return m.limit();

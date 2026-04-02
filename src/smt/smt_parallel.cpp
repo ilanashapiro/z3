@@ -191,31 +191,27 @@ namespace smt {
                     return;
                 }
 
-                // Core minimization: partition unsat core into cube literals vs rest
-                // This gives us the minimal subset of the cube needed for the conflict
+                // Partition the UNSAT core into tree literals. Any subsequent
+                // minimization must preserve exact assumption identities.
                 expr_ref_vector tree_core(m);
                 extract_tree_core(unsat_core, tree_core);
-                
-                // Track literals from cube that are NOT in the conflict
-                expr_ref_vector core_from_cube(m);
+
+                expr_ref_vector cube_core(m);
+                expr_ref_vector extra_tree_core(m);
                 expr_ref_vector irrelevant_to_conflict(m);
-                
-                // Iterate through the cube to find which literals participate in the conflict
                 for (expr* cube_lit : cube) {
                     if (tree_core.contains(cube_lit)) {
-                        core_from_cube.push_back(cube_lit);
+                        cube_core.push_back(cube_lit);
                     } else {
                         irrelevant_to_conflict.push_back(cube_lit);
                     }
                 }
-                
-                // Add non-cube literals from tree_core (guards translated to node literals, etc.)
+
                 for (expr* e : tree_core) {
-                    if (!core_from_cube.contains(e)) {
-                        core_from_cube.push_back(e);
-                    }
+                    if (!cube_core.contains(e))
+                        extra_tree_core.push_back(e);
                 }
-                
+
                 if (!irrelevant_to_conflict.empty()) {
                     LOG_WORKER(1, " core minimized: removed " << irrelevant_to_conflict.size() 
                             << " irrelevant literal(s) from cube of size " << cube.size() << "\n");
@@ -223,6 +219,10 @@ namespace smt {
                             for (auto a : irrelevant_to_conflict) verbose_stream() << mk_bounded_pp(a, m, 3) << "\n");
                 }
                 
+                expr_ref_vector core_from_cube(m);
+                core_from_cube.append(cube_core);
+                core_from_cube.append(extra_tree_core);
+
                 LOG_WORKER(1, " found unsat cube, minimal core size: " << core_from_cube.size() 
                           << " (full cube: " << cube.size() << ")\n");
                 
@@ -773,6 +773,15 @@ namespace smt {
     void parallel::batch_manager::collect_statistics(::statistics &st) const {
         st.update("parallel-num_cubes", m_stats.m_num_cubes);
         st.update("parallel-max-cube-size", m_stats.m_max_cube_depth);
+        st.update("parallel-cores-reduced", m_stats.m_num_cores_reduced);
+        st.update("parallel-total-literals-removed", m_stats.m_total_literals_removed);
+        
+        // Calculate average core reduction size
+        if (m_stats.m_num_cores_reduced > 0) {
+            double avg_reduction = static_cast<double>(m_stats.m_total_literals_removed) / 
+                                   static_cast<double>(m_stats.m_num_cores_reduced);
+            st.update("parallel-avg-literals-removed", avg_reduction);
+        }
     }
 
     lbool parallel::operator()(expr_ref_vector const &asms) {
@@ -823,6 +832,14 @@ namespace smt {
         // Wait for all threads to finish
         for (auto &th : threads)
             th.join();
+
+        // Aggregate worker statistics into batch manager
+        for (auto w : m_workers) {
+            m_batch_manager.add_core_minimization_stats(
+                w->get_num_cores_reduced(),
+                w->get_total_literals_removed()
+            );
+        }
 
         for (auto w : m_workers)
             w->collect_statistics(ctx.m_aux_stats);
