@@ -191,47 +191,50 @@ namespace smt {
                     return;
                 }
 
-                // Partition the UNSAT core into tree literals. Any subsequent
-                // minimization must preserve exact assumption identities.
                 expr_ref_vector tree_core(m);
                 extract_tree_core(unsat_core, tree_core);
+                expr_ref_vector backtrack_core(m);
+                if (m_config.m_core_minimize) {
+                    expr_ref_vector cube_core(m);
+                    expr_ref_vector extra_tree_core(m);
+                    expr_ref_vector irrelevant_to_conflict(m);
 
-                expr_ref_vector cube_core(m);
-                expr_ref_vector extra_tree_core(m);
-                expr_ref_vector irrelevant_to_conflict(m);
-                for (expr* cube_lit : cube) {
-                    if (tree_core.contains(cube_lit)) {
-                        cube_core.push_back(cube_lit);
-                    } else {
-                        irrelevant_to_conflict.push_back(cube_lit);
+                    for (expr* cube_lit : cube) {
+                        if (tree_core.contains(cube_lit)) {
+                            cube_core.push_back(cube_lit);
+                        }
+                        else {
+                            irrelevant_to_conflict.push_back(cube_lit);
+                        }
                     }
+
+                    for (expr* e : tree_core) {
+                        if (!cube_core.contains(e))
+                            extra_tree_core.push_back(e);
+                    }
+
+                    if (!irrelevant_to_conflict.empty()) {
+                        LOG_WORKER(1, " core minimized: removed " << irrelevant_to_conflict.size()
+                                << " irrelevant literal(s) from cube of size " << cube.size() << "\n");
+                        LOG_WORKER(2, " literals not in minimal core:\n";
+                                for (auto a : irrelevant_to_conflict) verbose_stream() << mk_bounded_pp(a, m, 3) << "\n");
+                    }
+
+                    backtrack_core.append(cube_core);
+                    backtrack_core.append(extra_tree_core);
+
+                    LOG_WORKER(1, " found unsat cube, minimal core size: " << backtrack_core.size()
+                              << " (full cube: " << cube.size() << ")\n");
+                }
+                else {
+                    backtrack_core.append(tree_core);
+                    LOG_WORKER(1, " found unsat cube\n");
                 }
 
-                for (expr* e : tree_core) {
-                    if (!cube_core.contains(e))
-                        extra_tree_core.push_back(e);
-                }
-
-                if (!irrelevant_to_conflict.empty()) {
-                    LOG_WORKER(1, " core minimized: removed " << irrelevant_to_conflict.size() 
-                            << " irrelevant literal(s) from cube of size " << cube.size() << "\n");
-                    LOG_WORKER(2, " literals not in minimal core:\n";
-                            for (auto a : irrelevant_to_conflict) verbose_stream() << mk_bounded_pp(a, m, 3) << "\n");
-                }
-                
-                expr_ref_vector core_from_cube(m);
-                core_from_cube.append(cube_core);
-                core_from_cube.append(extra_tree_core);
-
-                LOG_WORKER(1, " found unsat cube, minimal core size: " << core_from_cube.size() 
-                          << " (full cube: " << cube.size() << ")\n");
-                
-                // Backtrack with minimal core for stronger generalization
-                // This prunes all cubes containing the minimal core
-                b.backtrack(m_l2g, core_from_cube, node);
+                b.backtrack(m_l2g, backtrack_core, node);
 
                 if (m_config.m_share_conflicts)
-                    b.collect_clause(m_l2g, id, b.current_scope(m_l2g, node, core_from_cube), mk_not(mk_and(core_from_cube)));
+                    b.collect_clause(m_l2g, id, b.current_scope(m_l2g, node, backtrack_core), mk_not(mk_and(backtrack_core)));
 
                 break;
             }
@@ -260,6 +263,7 @@ namespace smt {
 
         smt_parallel_params pp(p.ctx.m_params);
         m_config.m_inprocessing = pp.inprocessing();
+        m_config.m_core_minimize = pp.core_minimize();
     }
 
     // Return a Boolean "guard" literal associated with a search-tree node.
