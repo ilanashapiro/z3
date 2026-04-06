@@ -29,6 +29,7 @@ Author:
 
 #include <cmath>
 #include <mutex>
+#include <chrono>
 
 class bounded_pp_exprs {
     expr_ref_vector const &es;
@@ -393,12 +394,15 @@ namespace smt {
         lbool r = l_undef;
 
         ctx->get_fparams().m_max_conflicts = std::min(m_config.m_threads_max_conflicts, m_config.m_max_conflicts);
-        m_last_check_effort = std::max<unsigned>(1, ctx->get_fparams().m_max_conflicts);
         IF_VERBOSE(1, verbose_stream() << " Checking cube\n"
                                        << bounded_pp_exprs(cube)
                                        << "with max_conflicts: " << ctx->get_fparams().m_max_conflicts << "\n";);
         try {
+            auto start = std::chrono::steady_clock::now();
             r = ctx->check(asms.size(), asms.data());
+            auto end = std::chrono::steady_clock::now();
+            unsigned elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            m_last_check_effort = std::max(1u, elapsed_ms);
         } catch (z3_error &err) {
             b.set_exception(err.error_code());
         } catch (z3_exception &ex) {
@@ -408,6 +412,7 @@ namespace smt {
         }
         asms.shrink(asms.size() - cube.size());
         LOG_WORKER(1, " DONE checking cube " << r << "\n";);
+
         return r;
     }
 

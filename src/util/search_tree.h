@@ -176,6 +176,14 @@ namespace search_tree {
             return false;
         }
 
+        // Traverse the entire subtree and select the best open node according to
+        // the SMTS-inspired ranking policy:
+        //
+        // 1. Prefer nodes in lower effort bands (effort_spent / effort_unit).
+        // 2. Break ties by preferring deeper nodes (depth-first bias within band).
+        //
+        // This function does NOT activate nodes; it only updates `best` with the
+        // highest-ranked open candidate found during traversal.
         void collect_best_open_node(node<Config>* cur, candidate& best) const {
             if (!cur || cur->get_status() == status::closed)
                 return;
@@ -191,6 +199,15 @@ namespace search_tree {
             collect_best_open_node(cur->right(), best);
         }
 
+        // Select and activate the best available open node in the tree.
+        //
+        // Uses `collect_best_open_node` to globally rank all open nodes based on:
+        //   (1) lowest effort band
+        //   (2) greatest depth (tie-break)
+        //
+        // The selected node is marked as active and its activation counter is updated.
+        //
+        // Returns nullptr if no open node is available.
         node<Config>* activate_best_node() {
             candidate best;
             collect_best_open_node(m_root.get(), best);
@@ -223,6 +240,13 @@ namespace search_tree {
                    count_active_nodes(cur->right());
         }
 
+        // Compute the minimum depth among all leaf nodes that have already consumed
+        // some solver effort (i.e., effort_spent > 0).
+        //
+        // This identifies the shallowest "timed-out" leaf in the tree, which is used
+        // to control expansion: only nodes at this depth are eligible for splitting.
+        //
+        // Returns UINT_MAX if no such leaf exists.
         unsigned shallowest_timed_out_leaf_depth(node<Config>* cur, unsigned best) const {
             if (!cur || cur->get_status() == status::closed)
                 return best;
@@ -233,6 +257,19 @@ namespace search_tree {
             return best;
         }
 
+        // Decide whether the currently active node `n` should be expanded (split)
+        // after consuming `effort`, or instead be reopened for future exploration.
+        //
+        // This implements a gated, SMTS-inspired expansion policy:
+        //
+        // - Accumulates effort into the node.
+        // - Only considers leaf nodes for expansion.
+        // - Prevents overgrowth: tree size must be < active_nodes * expand_factor.
+        // - Requires that all open nodes have been visited at least once.
+        // - Restricts expansion to the shallowest timed-out leaves.
+        // - Adds randomized throttling when tree size is already large.
+        //
+        // Returns true if the node should be split, false if it should be reopened.
         bool should_expand(node<Config>* n, unsigned effort) {
             if (!n || n->get_status() != status::active)
                 return false;
