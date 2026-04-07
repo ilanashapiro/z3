@@ -256,8 +256,8 @@ namespace search_tree {
 
             // Optimization: exclude nodes that have timed out too many times
             // Paper suggests threshold of 4·TS (4 timeout periods)
-            if (cur->effort_spent() >= m_max_timeout_factor * m_effort_unit)
-                return 0;  // Don't count heavily timed-out nodes
+            // if (cur->effort_spent() >= m_max_timeout_factor * m_effort_unit)
+            //     return 0;  // Don't count heavily timed-out nodes
 
             return 1 + count_unsolved_nodes(cur->left()) + count_unsolved_nodes(cur->right());
         }
@@ -282,9 +282,8 @@ namespace search_tree {
             if (!cur || cur->get_status() == status::closed)
                 return;
             
-            if (cur->is_leaf() && cur->effort_spent() > 0) {
+            if (cur->is_leaf() && cur->effort_spent() > 0)
                 best_depth = std::min(best_depth, cur->depth());
-            }
             
             find_shallowest_timed_out_leaf_depth(cur->left(), best_depth);
             find_shallowest_timed_out_leaf_depth(cur->right(), best_depth);
