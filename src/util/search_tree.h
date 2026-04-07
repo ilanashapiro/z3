@@ -48,7 +48,7 @@ namespace search_tree {
         vector<literal> m_core;
         unsigned m_num_activations = 0;
         unsigned m_effort_spent = 0;
-        unsigned m_active_workers = 0; 
+        // unsigned m_active_workers = 0; 
 
     public:
         node(literal const &l, node *parent) : m_literal(l), m_parent(parent), m_status(status::open) {}
@@ -95,23 +95,7 @@ namespace search_tree {
             }
             return d;
         }
-
-        node *find_active_node() {
-            if (m_status == status::active)
-                return this;
-            if (m_status == status::closed)
-                return nullptr;
-            node *nodes[2] = {m_left, m_right};
-            for (unsigned i = 0; i < 2; ++i) {
-                auto res = nodes[i] ? nodes[i]->find_active_node() : nullptr;
-                if (res)
-                    return res;
-            }
-            if (m_left->get_status() == status::closed && m_right->get_status() == status::closed)
-                m_status = status::closed;
-            return nullptr;
-        }
-
+        
         void display(std::ostream &out, unsigned indent) const {
             for (unsigned i = 0; i < indent; ++i)
                 out << " ";
@@ -136,8 +120,10 @@ namespace search_tree {
         unsigned num_activations() const {
             return m_num_activations;
         }
-        void mark_activated() {
+        void mark_new_activation() {
+            set_status(status::active);
             ++m_num_activations;
+            // inc_active_workers();
         }
         unsigned effort_spent() const {
             return m_effort_spent;
@@ -145,16 +131,16 @@ namespace search_tree {
         void add_effort(unsigned effort) {
             m_effort_spent += effort;
         }
-        void inc_active_workers() { 
-            ++m_active_workers; 
-        }
-        void dec_active_workers() { 
-            SASSERT(m_active_workers > 0); 
-            --m_active_workers; 
-        }
-        unsigned active_workers() const { 
-            return m_active_workers; 
-        }
+        // void inc_active_workers() { 
+        //     ++m_active_workers; 
+        // }
+        // void dec_active_workers() { 
+        //     SASSERT(m_active_workers > 0); 
+        //     --m_active_workers; 
+        // }
+        // unsigned active_workers() const { 
+        //     return m_active_workers; 
+        // }
     };
 
     template <typename Config> class tree {
@@ -193,15 +179,10 @@ namespace search_tree {
                 return false;
             if (!b.n)
                 return true;
-
-            // 1. Strict timeout band (correct)
             if (a.effort_band != b.effort_band)
                 return a.effort_band < b.effort_band;
-
-            // 2. Depth (deeper first)
             if (a.depth != b.depth)
                 return a.depth > b.depth;
-
             return false;
         }
 
@@ -217,25 +198,27 @@ namespace search_tree {
         //
         // This function does NOT activate nodes; it only updates `best` with the
         // highest-ranked open candidate found during traversal.
-        void select_next_node(node<Config>* cur, candidate& best) const {
+        void select_next_node(node<Config>* cur, status target_status, candidate& best) const {
             if (!cur || cur->get_status() == status::closed)
                 return;
 
-            candidate cand;
-            cand.n = cur;
-            cand.effort_band = effort_band(cur);  // Add active_workers to effort_band to deprioritize nodes currently being worked on (portfolio solving)
-            cand.depth = cur->depth();
+            if (cur->get_status() == target_status) {
+                candidate cand;
+                cand.n = cur;
+                cand.effort_band = effort_band(cur);
+                cand.depth = cur->depth();
 
-            if (better(cand, best))
-                best = cand;
+                if (better(cand, best))
+                    best = cand;
+            }
 
-            select_next_node(cur->left(), best);
-            select_next_node(cur->right(), best);
+            select_next_node(cur->left(), target_status, best);
+            select_next_node(cur->right(), target_status, best);
         }
 
         // Select and activate the best available open node in the tree.
         //
-        // Uses `collect_best_open_node` to globally rank all open nodes based on:
+        // Uses `select_next_node` to globally rank all open nodes based on:
         //   (1) lowest effort band
         //   (2) greatest depth (tie-break)
         //
@@ -244,12 +227,15 @@ namespace search_tree {
         // Returns nullptr if no open node is available.
         node<Config>* activate_best_node() {
             candidate best;
-            select_next_node(m_root.get(), best);
+            select_next_node(m_root.get(), status::open, best);
+            if (!best.n) {
+                IF_VERBOSE(1, verbose_stream() << "NO OPEN NODES, trying active nodes for portfolio solving\n";);
+                select_next_node(m_root.get(), status::active, best); // If no open nodes, only then consider active nodes for selection
+            }
+                
             if (!best.n)
                 return nullptr;
-            best.n->set_status(status::active);
-            best.n->mark_activated();
-            best.n->inc_active_workers();
+            best.n->mark_new_activation();
             return best.n;
         }
 
@@ -264,7 +250,7 @@ namespace search_tree {
         // where some nodes have consumed many timeouts without solving.
         // Count ALL nodes in the tree (including closed ones).
         // This matches the paper's |tree| definition used in Algorithm 4.
-        unsigned count_nodes_for_expansion(node<Config>* cur) const {
+        unsigned count_unsolved_nodes(node<Config>* cur) const {
             if (!cur || cur->get_status() == status::closed)
                 return 0;
 
@@ -273,14 +259,7 @@ namespace search_tree {
             if (cur->effort_spent() >= m_max_timeout_factor * m_effort_unit)
                 return 0;  // Don't count heavily timed-out nodes
 
-            return 1 + count_nodes_for_expansion(cur->left()) + count_nodes_for_expansion(cur->right());
-        }
-
-        
-        unsigned count_all_nodes(node<Config>* cur) const {
-            if (!cur)
-                return 0;
-            return 1 + count_all_nodes(cur->left()) + count_all_nodes(cur->right());
+            return 1 + count_unsolved_nodes(cur->left()) + count_unsolved_nodes(cur->right());
         }
 
         bool has_unvisited_open_node(node<Config>* cur) const {
@@ -289,14 +268,6 @@ namespace search_tree {
             if (cur->get_status() == status::open && cur->num_activations() == 0)
                 return true;
             return has_unvisited_open_node(cur->left()) || has_unvisited_open_node(cur->right());
-        }
-
-        unsigned count_active_nodes(node<Config>* cur) const {
-            if (!cur || cur->get_status() == status::closed)
-                return 0;
-            return (cur->get_status() == status::active ? 1 : 0) +
-                   count_active_nodes(cur->left()) +
-                   count_active_nodes(cur->right());
         }
 
         // Compute the minimum depth among all leaf nodes that have timed out (effort_spent > 0).
@@ -312,9 +283,7 @@ namespace search_tree {
                 return;
             
             if (cur->is_leaf() && cur->effort_spent() > 0) {
-                unsigned d = cur->depth();
-                if (d < best_depth)
-                    best_depth = d;
+                best_depth = std::min(best_depth, cur->depth());
             }
             
             find_shallowest_timed_out_leaf_depth(cur->left(), best_depth);
@@ -349,7 +318,7 @@ namespace search_tree {
 
             // Use optimized tree size computation (excludes heavily timed-out nodes)
             // Paper's optimization after Algorithm 4: exclude nodes where node.time >= 4·TS
-            unsigned tree_size = count_nodes_for_expansion(m_root.get());
+            unsigned tree_size = count_unsolved_nodes(m_root.get());
             unsigned k = m_expand_factor;
 
             // Gate 2-3: Size constraints (Algorithm 4, lines 2-4)
@@ -377,9 +346,17 @@ namespace search_tree {
             find_shallowest_timed_out_leaf_depth(m_root.get(), shallowest_timed_out_leaf_depth);
             
             // Only expand if `n` is a shallowest timed-out leaf
-            return n->is_leaf() &&
-                n->effort_spent() > 0 &&
-                n->depth() == shallowest_timed_out_leaf_depth;
+            bool is_timed_out_leaf = n->is_leaf() && n->effort_spent() > 0;
+            return is_timed_out_leaf && 
+                   n->depth() == shallowest_timed_out_leaf_depth;
+        }
+
+        unsigned count_active_nodes(node<Config>* cur) const {
+            if (!cur || cur->get_status() == status::closed)
+                return 0;
+            return (cur->get_status() == status::active ? 1 : 0) +
+                   count_active_nodes(cur->left()) +
+                   count_active_nodes(cur->right());
         }
 
         // Bubble to the highest ancestor where ALL literals in the resolvent
@@ -552,9 +529,7 @@ namespace search_tree {
 
         void reset() {
             m_root = alloc(node<Config>, m_null_literal, nullptr);
-            m_root->set_status(status::active);
-            m_root->mark_activated();
-            m_root->inc_active_workers();
+            m_root->mark_new_activation();
         }
 
         // On timeout, update effort and decide whether to expand the tree.
@@ -572,25 +547,35 @@ namespace search_tree {
         //   n - the node that just timed out
         //   a, b - the split literals for node n
         //   effort - time/conflicts spent (added to node.time)
-        void split(node<Config> *n, literal const &a, literal const &b, unsigned effort = 1) {
-            if (!n || n->get_status() != status::active)
-                return;
+        // bool try_split(node<Config> *n, literal const &a, literal const &b) {
+        //     if (!n || n->get_status() != status::active)
+        //         return false;
             
-            // Update effort BEFORE attempting expansion (matches paper's Algorithm 1, line 6)
-            n->add_effort(effort); // each timeout → +effort_unit → band increases by exactly 1
+        //     // Decide whether to expand the tree (paper's Algorithm 4 logic)
+        //     // Note: Paper would globally select shallowest leaf, but we can only expand `n`
+        //     // because we only have split literals for it. However, we still check:
+        //     //   1. If n is a valid expansion candidate (is it shallowest?)
+        //     //   2. If tree-wide expansion conditions are met
+        //     bool should_expand = should_split(n);
+        //     if (should_expand) {
+        //         n->split(a, b);
+        //     } 
+        //     if (n->active_workers() == 0)
+        //         n->set_status(status::open);
+            
+        //     return should_expand;
+        // }
 
-            n->dec_active_workers();
-            
-            // Decide whether to expand the tree (paper's Algorithm 4 logic)
-            // Note: Paper would globally select shallowest leaf, but we can only expand `n`
-            // because we only have split literals for it. However, we still check:
-            //   1. If n is a valid expansion candidate (is it shallowest?)
-            //   2. If tree-wide expansion conditions are met
+        bool try_split(node<Config> *n, literal const &a, literal const &b) {
+            if (!n || n->get_status() != status::active)
+                return false;
             if (should_split(n)) {
                 n->split(a, b);
-            } else if (n->active_workers() == 0) {
+                return true;
+            } else {
                 n->set_status(status::open);
             }
+            return false;
         }
 
         // conflict is given by a set of literals.
@@ -634,15 +619,11 @@ namespace search_tree {
         node<Config> *activate_node(node<Config> *n) {
             if (!n) {
                 if (m_root->get_status() == status::active) {
-                    m_root->inc_active_workers();
+                    m_root->mark_new_activation();
                     return m_root.get();
                 }
             }
             return activate_best_node();
-        }
-
-        node<Config> *find_active_node() {
-            return m_root->find_active_node();
         }
 
         vector<literal> const &get_core_from_root() const {
