@@ -325,7 +325,7 @@ namespace smt {
             expr_ref g_c(l2g(c), m);
             g_core.push_back(expr_ref(l2g(c), m));
         }
-        m_search_tree.release_active_node(node, search_tree::status::open);
+        node->dec_active_workers();
         m_search_tree.backtrack(node, g_core);
 
         IF_VERBOSE(1, m_search_tree.display(verbose_stream() << bounded_pp_exprs(core) << "\n"););

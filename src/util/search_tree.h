@@ -48,7 +48,7 @@ namespace search_tree {
         vector<literal> m_core;
         unsigned m_num_activations = 0;
         unsigned m_effort_spent = 0;
-        unsigned m_active_workers = 0; // Number of workers currently assigned to this node (SMTS "n_to_skip" equivalent)
+        unsigned m_active_workers = 0; 
 
     public:
         node(literal const &l, node *parent) : m_literal(l), m_parent(parent), m_status(status::open) {}
@@ -177,7 +177,7 @@ namespace search_tree {
         // This corresponds to maxTouts in the paper's Algorithm 2:
         // effort_band = floor(node.time / TS) where TS is the solver timeout unit.
         unsigned effort_band(node<Config> const* n) const {
-            return n->effort_spent() / std::max<unsigned>(1, m_effort_unit);
+            return n->effort_spent() / m_effort_unit;
         }
 
         // Compare two candidate nodes according to the SMTS selection policy (Algorithm 2).
@@ -193,12 +193,15 @@ namespace search_tree {
                 return false;
             if (!b.n)
                 return true;
-            // Primary: prefer lower effort band (fewer accumulated timeouts)
+
+            // 1. Strict timeout band (correct)
             if (a.effort_band != b.effort_band)
                 return a.effort_band < b.effort_band;
-            // Secondary: prefer deeper nodes (depth-first within same timeout band)
+
+            // 2. Depth (deeper first)
             if (a.depth != b.depth)
                 return a.depth > b.depth;
+
             return false;
         }
 
@@ -218,18 +221,14 @@ namespace search_tree {
             if (!cur || cur->get_status() == status::closed)
                 return;
 
-            // consider node if it's open or active (active nodes can be selected again if they have fewer timeouts than other candidates)
             candidate cand;
             cand.n = cur;
-
-            // SMTS "already has solvers" penalty:
-            // Inflate effort band by number of active workers on this node.
-            // This simulates the scheduler skipping the node k times.
-            cand.effort_band = effort_band(cur) + cur->active_workers();
+            cand.effort_band = effort_band(cur);  // Add active_workers to effort_band to deprioritize nodes currently being worked on (portfolio solving)
             cand.depth = cur->depth();
 
             if (better(cand, best))
                 best = cand;
+
             select_next_node(cur->left(), best);
             select_next_node(cur->right(), best);
         }
@@ -254,20 +253,6 @@ namespace search_tree {
             return best.n;
         }
 
-        unsigned count_unsolved_nodes(node<Config>* cur) const {
-            if (!cur || cur->get_status() == status::closed)
-                return 0;
-            return 1 + count_unsolved_nodes(cur->left()) + count_unsolved_nodes(cur->right());
-        }
-
-        // Count ALL nodes in the tree (including closed ones).
-        // This matches the paper's |tree| definition used in Algorithm 4.
-        unsigned count_all_nodes(node<Config>* cur) const {
-            if (!cur)
-                return 0;
-            return 1 + count_all_nodes(cur->left()) + count_all_nodes(cur->right());
-        }
-
         // Count nodes for expansion decision, with optimization from paper.
         //
         // Paper's optimization (after Algorithm 4):
@@ -277,17 +262,25 @@ namespace search_tree {
         //
         // This makes the tree appear smaller, encouraging expansion on hard instances
         // where some nodes have consumed many timeouts without solving.
+        // Count ALL nodes in the tree (including closed ones).
+        // This matches the paper's |tree| definition used in Algorithm 4.
         unsigned count_nodes_for_expansion(node<Config>* cur) const {
-            if (!cur)
+            if (!cur || cur->get_status() == status::closed)
                 return 0;
-            
+
             // Optimization: exclude nodes that have timed out too many times
             // Paper suggests threshold of 4·TS (4 timeout periods)
             if (cur->effort_spent() >= m_max_timeout_factor * m_effort_unit)
                 return 0;  // Don't count heavily timed-out nodes
-            
-            return 1 + count_nodes_for_expansion(cur->left()) + 
-                       count_nodes_for_expansion(cur->right());
+
+            return 1 + count_nodes_for_expansion(cur->left()) + count_nodes_for_expansion(cur->right());
+        }
+
+        
+        unsigned count_all_nodes(node<Config>* cur) const {
+            if (!cur)
+                return 0;
+            return 1 + count_all_nodes(cur->left()) + count_all_nodes(cur->right());
         }
 
         bool has_unvisited_open_node(node<Config>* cur) const {
@@ -357,28 +350,25 @@ namespace search_tree {
             // Use optimized tree size computation (excludes heavily timed-out nodes)
             // Paper's optimization after Algorithm 4: exclude nodes where node.time >= 4·TS
             unsigned tree_size = count_nodes_for_expansion(m_root.get());
-            unsigned num_workers = std::max(1u, m_num_workers);
             unsigned k = m_expand_factor;
-            
+
             // Gate 2-3: Size constraints (Algorithm 4, lines 2-4)
-            // CRITICAL: These are SEPARATE checks, not combined
-            if (tree_size >= num_workers) {
-                // Soft threshold reached - inner check for hard threshold
-                if (tree_size >= k * num_workers)
-                    return false;  // Hard cutoff - MUST abort
-                // Between n and k*n - continue to other gates
+            if (tree_size >= k * m_num_workers)
+                return false;
+
+            // ONLY throttle when tree is "large enough"
+            // Between n and k*n - continue to other gates
+            if (tree_size >= m_num_workers) {
+                // Gate 4: NEW node check (Algorithm 4, line 5)
+                if (has_unvisited_open_node(m_root.get()))
+                    return false;
+
+                // Gate 5: Random throttling (Algorithm 4, lines 7-9)
+                // r ← Random() ∈ ]0,1[; if r >= 1/p then abort
+                // With p=2, this gives 50% rejection
+                if (m_rand(2) != 0)
+                    return false;
             }
-            
-            // Gate 4: NEW node check (Algorithm 4, line 5)
-            if (has_unvisited_open_node(m_root.get()))
-                return false;
-            
-            // Gate 5: Random throttling (Algorithm 4, lines 7-9)
-            // CRITICAL: Independent of size (not "if size >= n && random")
-            // r ← Random() ∈ ]0,1[; if r >= 1/p then abort
-            // With p=2, this gives 50% rejection
-            if (m_rand(2) != 0)
-                return false;
 
             // Gate 6: Select shallowest timed-out leaf (Algorithm 4, line 10)
             // Paper: globally select shallowest leaf
@@ -564,6 +554,7 @@ namespace search_tree {
             m_root = alloc(node<Config>, m_null_literal, nullptr);
             m_root->set_status(status::active);
             m_root->mark_activated();
+            m_root->inc_active_workers();
         }
 
         // On timeout, update effort and decide whether to expand the tree.
@@ -587,6 +578,8 @@ namespace search_tree {
             
             // Update effort BEFORE attempting expansion (matches paper's Algorithm 1, line 6)
             n->add_effort(effort); // each timeout → +effort_unit → band increases by exactly 1
+
+            n->dec_active_workers();
             
             // Decide whether to expand the tree (paper's Algorithm 4 logic)
             // Note: Paper would globally select shallowest leaf, but we can only expand `n`
@@ -595,9 +588,8 @@ namespace search_tree {
             //   2. If tree-wide expansion conditions are met
             if (should_split(n)) {
                 n->split(a, b);
-            } else {
-                // Expansion rejected - reopen node for future exploration
-                release_active_node(n, status::open);
+            } else if (n->active_workers() == 0) {
+                n->set_status(status::open);
             }
         }
 
@@ -641,21 +633,16 @@ namespace search_tree {
         // if not, go up the tree and try to activate a sibling subtree
         node<Config> *activate_node(node<Config> *n) {
             if (!n) {
-                if (m_root->get_status() == status::active)
+                if (m_root->get_status() == status::active) {
+                    m_root->inc_active_workers();
                     return m_root.get();
+                }
             }
             return activate_best_node();
         }
 
         node<Config> *find_active_node() {
             return m_root->find_active_node();
-        }
-
-        void release_active_node(node<Config>* n, status new_status) {
-            if (!n || n->get_status() != status::active)
-                return;
-            n->dec_active_workers();
-            n->set_status(new_status);
         }
 
         vector<literal> const &get_core_from_root() const {
