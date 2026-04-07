@@ -319,14 +319,19 @@ namespace search_tree {
             // Paper's optimization after Algorithm 4: exclude nodes where node.time >= 4·TS
             unsigned tree_size = count_unsolved_nodes(m_root.get());
             unsigned k = m_expand_factor;
+            
+            // Paper uses "n" = number of available/idle workers
+            // Old Z3 approximated this with count_active_nodes()
+            // We use that instead of fixed m_num_workers to allow more expansion when workers are idle
+            unsigned active_nodes = count_active_nodes(m_root.get());
 
             // Gate 2-3: Size constraints (Algorithm 4, lines 2-4)
-            if (tree_size >= k * m_num_workers)
+            if (tree_size >= k * active_nodes)
                 return false;
 
             // ONLY throttle when tree is "large enough"
             // Between n and k*n - continue to other gates
-            if (tree_size >= m_num_workers) {
+            if (tree_size >= active_nodes) {
                 // Gate 4: NEW node check (Algorithm 4, line 5)
                 if (has_unvisited_open_node(m_root.get()))
                     return false;
