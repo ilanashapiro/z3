@@ -29,7 +29,6 @@ Author:
 
 #include <cmath>
 #include <mutex>
-#include <chrono>
 
 class bounded_pp_exprs {
     expr_ref_vector const &es;
@@ -141,7 +140,7 @@ namespace smt {
                 auto atom = get_split_atom();
                 if (!atom)
                     goto check_cube_start;
-                b.split(m_l2g, id, node, atom, m_last_check_effort);
+                b.split(m_l2g, id, node, atom, m_config.m_threads_max_conflicts_initial);
                 simplify();
                 break;
             }
@@ -326,6 +325,7 @@ namespace smt {
             expr_ref g_c(l2g(c), m);
             g_core.push_back(expr_ref(l2g(c), m));
         }
+        m_search_tree.release_active_node(node, search_tree::status::open);
         m_search_tree.backtrack(node, g_core);
 
         IF_VERBOSE(1, m_search_tree.display(verbose_stream() << bounded_pp_exprs(core) << "\n"););
@@ -398,11 +398,7 @@ namespace smt {
                                        << bounded_pp_exprs(cube)
                                        << "with max_conflicts: " << ctx->get_fparams().m_max_conflicts << "\n";);
         try {
-            auto start = std::chrono::steady_clock::now();
             r = ctx->check(asms.size(), asms.data());
-            auto end = std::chrono::steady_clock::now();
-            unsigned elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-            m_last_check_effort = std::max(1u, elapsed_ms);
         } catch (z3_error &err) {
             b.set_exception(err.error_code());
         } catch (z3_exception &ex) {
@@ -535,10 +531,11 @@ namespace smt {
         return true;
     }
 
-    void parallel::batch_manager::initialize() {
+    void parallel::batch_manager::initialize(unsigned initial_max_thread_conflicts) {
         m_state = state::is_running;
         m_search_tree.reset();
-        m_search_tree.set_effort_unit(1000);
+        m_search_tree.set_effort_unit(initial_max_thread_conflicts);
+        m_search_tree.set_num_workers(p.num_threads);
     }
 
     void parallel::batch_manager::collect_statistics(::statistics &st) const {

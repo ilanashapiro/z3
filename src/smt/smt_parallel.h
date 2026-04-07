@@ -96,7 +96,7 @@ namespace smt {
         public:
             batch_manager(ast_manager& m, parallel& p) : m(m), p(p), m_search_tree(expr_ref(m)) { }
 
-            void initialize();
+            void initialize(unsigned initial_max_thread_conflicts = 1000); // TODO: pass in from worker defaults
 
             void set_unsat(ast_translation& l2g, expr_ref_vector const& unsat_core);
             void set_sat(ast_translation& l2g, model& m);
@@ -117,6 +117,7 @@ namespace smt {
         class worker {
             struct config {
                 unsigned m_threads_max_conflicts = 1000;
+                unsigned m_threads_max_conflicts_initial = 1000; // save the initial max conflicts for search tree policies
                 bool m_share_units = true;
                 bool m_share_conflicts = true;
                 bool m_share_units_relevant_only = true;
@@ -145,7 +146,6 @@ namespace smt {
             unsigned m_num_shared_units = 0;
             unsigned m_num_initial_atoms = 0;
             unsigned m_shared_clause_limit = 0; // remembers the index into shared_clause_trail marking the boundary between "old" and "new" clauses to share
-            unsigned m_last_check_effort = 1;
             
             expr_ref get_split_atom();
 

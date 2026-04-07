@@ -48,6 +48,7 @@ namespace search_tree {
         vector<literal> m_core;
         unsigned m_num_activations = 0;
         unsigned m_effort_spent = 0;
+        unsigned m_active_workers = 0; // Number of workers currently assigned to this node (SMTS "n_to_skip" equivalent)
 
     public:
         node(literal const &l, node *parent) : m_literal(l), m_parent(parent), m_status(status::open) {}
@@ -144,6 +145,16 @@ namespace search_tree {
         void add_effort(unsigned effort) {
             m_effort_spent += effort;
         }
+        void inc_active_workers() { 
+            ++m_active_workers; 
+        }
+        void dec_active_workers() { 
+            SASSERT(m_active_workers > 0); 
+            --m_active_workers; 
+        }
+        unsigned active_workers() const { 
+            return m_active_workers; 
+        }
     };
 
     template <typename Config> class tree {
@@ -151,52 +162,76 @@ namespace search_tree {
         scoped_ptr<node<Config>> m_root = nullptr;
         literal m_null_literal;
         random_gen m_rand;
-        unsigned m_expand_factor = 2;
-        unsigned m_effort_unit = 1;
+        unsigned m_expand_factor = 2;       // k in paper's Algorithm 4
+        unsigned m_effort_unit = 1;         // TS (solver timeout) in paper's Algorithm 2
+        unsigned m_num_workers = 1;         // n in paper's Algorithm 4 (number of available solvers/workers)
+        unsigned m_max_timeout_factor = 4;  // Threshold for excluding heavily timed-out nodes from tree size
 
         struct candidate {
             node<Config>* n = nullptr;
-            unsigned effort_band = UINT64_MAX;
+            unsigned effort_band = UINT64_MAX;  // corresponds to maxTouts in paper's Algorithm 2
             unsigned depth = 0;
         };
 
+        // Compute the effort band (timeout threshold) for a node.
+        // This corresponds to maxTouts in the paper's Algorithm 2:
+        // effort_band = floor(node.time / TS) where TS is the solver timeout unit.
         unsigned effort_band(node<Config> const* n) const {
             return n->effort_spent() / std::max<unsigned>(1, m_effort_unit);
         }
 
+        // Compare two candidate nodes according to the SMTS selection policy (Algorithm 2).
+        // 
+        // Paper's Algorithm 2 priority:
+        //   1. Lower effort band (fewer timeouts) - corresponds to outer loop over maxTouts
+        //   2. Greater depth (depth-first bias) - corresponds to inner loop from maxDepth down to 0
+        //
+        // This ensures unvisited nodes (effort_band=0) are always preferred before any node
+        // that has timed out, matching the paper's nested loop structure.
         bool better(candidate const& a, candidate const& b) const {
             if (!a.n)
                 return false;
             if (!b.n)
                 return true;
+            // Primary: prefer lower effort band (fewer accumulated timeouts)
             if (a.effort_band != b.effort_band)
                 return a.effort_band < b.effort_band;
+            // Secondary: prefer deeper nodes (depth-first within same timeout band)
             if (a.depth != b.depth)
                 return a.depth > b.depth;
             return false;
         }
 
-        // Traverse the entire subtree and select the best open node according to
-        // the SMTS-inspired ranking policy:
+        // Traverse the entire subtree and select the best open (or active! -> portfolio solving mode) node according to
+        // the SMTS node selection policy (paper's Algorithm 2):
         //
-        // 1. Prefer nodes in lower effort bands (effort_spent / effort_unit).
-        // 2. Break ties by preferring deeper nodes (depth-first bias within band).
+        // 1. Prefer nodes with lower effort bands (fewer accumulated timeouts).
+        //    - effort_band = floor(node.time / TS) corresponds to maxTouts in the paper
+        //    - This ensures NEW (unvisited) nodes are always tried before revisiting timed-out nodes
+        //
+        // 2. Break ties by preferring deeper nodes (depth-first bias within same timeout band).
+        //    - Corresponds to the inner loop: for d = maxDepth; d >= 0; d--
         //
         // This function does NOT activate nodes; it only updates `best` with the
         // highest-ranked open candidate found during traversal.
-        void collect_best_open_node(node<Config>* cur, candidate& best) const {
+        void select_next_node(node<Config>* cur, candidate& best) const {
             if (!cur || cur->get_status() == status::closed)
                 return;
-            if (cur->get_status() == status::open) {
-                candidate cand;
-                cand.n = cur;
-                cand.effort_band = effort_band(cur);
-                cand.depth = cur->depth();
-                if (better(cand, best))
-                    best = cand;
-            }
-            collect_best_open_node(cur->left(), best);
-            collect_best_open_node(cur->right(), best);
+
+            // consider node if it's open or active (active nodes can be selected again if they have fewer timeouts than other candidates)
+            candidate cand;
+            cand.n = cur;
+
+            // SMTS "already has solvers" penalty:
+            // Inflate effort band by number of active workers on this node.
+            // This simulates the scheduler skipping the node k times.
+            cand.effort_band = effort_band(cur) + cur->active_workers();
+            cand.depth = cur->depth();
+
+            if (better(cand, best))
+                best = cand;
+            select_next_node(cur->left(), best);
+            select_next_node(cur->right(), best);
         }
 
         // Select and activate the best available open node in the tree.
@@ -210,11 +245,12 @@ namespace search_tree {
         // Returns nullptr if no open node is available.
         node<Config>* activate_best_node() {
             candidate best;
-            collect_best_open_node(m_root.get(), best);
+            select_next_node(m_root.get(), best);
             if (!best.n)
                 return nullptr;
             best.n->set_status(status::active);
             best.n->mark_activated();
+            best.n->inc_active_workers();
             return best.n;
         }
 
@@ -222,6 +258,36 @@ namespace search_tree {
             if (!cur || cur->get_status() == status::closed)
                 return 0;
             return 1 + count_unsolved_nodes(cur->left()) + count_unsolved_nodes(cur->right());
+        }
+
+        // Count ALL nodes in the tree (including closed ones).
+        // This matches the paper's |tree| definition used in Algorithm 4.
+        unsigned count_all_nodes(node<Config>* cur) const {
+            if (!cur)
+                return 0;
+            return 1 + count_all_nodes(cur->left()) + count_all_nodes(cur->right());
+        }
+
+        // Count nodes for expansion decision, with optimization from paper.
+        //
+        // Paper's optimization (after Algorithm 4):
+        //   "Alg. 4 excludes nodes that have already timed out a certain number
+        //    of times when computing the size of the tree |tree| (e.g., when
+        //    node.time >= 4·TS)."
+        //
+        // This makes the tree appear smaller, encouraging expansion on hard instances
+        // where some nodes have consumed many timeouts without solving.
+        unsigned count_nodes_for_expansion(node<Config>* cur) const {
+            if (!cur)
+                return 0;
+            
+            // Optimization: exclude nodes that have timed out too many times
+            // Paper suggests threshold of 4·TS (4 timeout periods)
+            if (cur->effort_spent() >= m_max_timeout_factor * m_effort_unit)
+                return 0;  // Don't count heavily timed-out nodes
+            
+            return 1 + count_nodes_for_expansion(cur->left()) + 
+                       count_nodes_for_expansion(cur->right());
         }
 
         bool has_unvisited_open_node(node<Config>* cur) const {
@@ -240,59 +306,90 @@ namespace search_tree {
                    count_active_nodes(cur->right());
         }
 
-        // Compute the minimum depth among all leaf nodes that have already consumed
-        // some solver effort (i.e., effort_spent > 0).
+        // Compute the minimum depth among all leaf nodes that have timed out (effort_spent > 0).
+        // This corresponds to Algorithm 4's SelectShallowestLeaf(tree),
+        // but instead of selecting one node, we compute the shallowest depth
+        // so that ANY node at that depth is eligible for expansion.
         //
-        // This identifies the shallowest "timed-out" leaf in the tree, which is used
-        // to control expansion: only nodes at this depth are eligible for splitting.
-        //
-        // Returns UINT_MAX if no such leaf exists.
-        unsigned shallowest_timed_out_leaf_depth(node<Config>* cur, unsigned best) const {
+        // IMPORTANT:
+        // - Only considers leaves with effort_spent() > 0 (i.e., timed-out nodes)
+        // - Assumes caller already checked: no NEW nodes exist (SMTS Gate 4)
+        void find_shallowest_timed_out_leaf_depth(node<Config>* cur, unsigned& best_depth) const {
             if (!cur || cur->get_status() == status::closed)
-                return best;
-            if (cur->is_leaf() && cur->effort_spent() > 0)
-                best = std::min(best, cur->depth());
-            best = shallowest_timed_out_leaf_depth(cur->left(), best);
-            best = shallowest_timed_out_leaf_depth(cur->right(), best);
-            return best;
+                return;
+            
+            if (cur->is_leaf() && cur->effort_spent() > 0) {
+                unsigned d = cur->depth();
+                if (d < best_depth)
+                    best_depth = d;
+            }
+            
+            find_shallowest_timed_out_leaf_depth(cur->left(), best_depth);
+            find_shallowest_timed_out_leaf_depth(cur->right(), best_depth);
         }
 
-        // Decide whether the currently active node `n` should be expanded (split)
-        // after consuming `effort`, or instead be reopened for future exploration.
+        // Decide whether to expand the tree when node `n` has timed out.
         //
-        // This implements a gated, SMTS-inspired expansion policy:
+        // This implements the SMTS tree expansion policy (paper's Algorithm 4: TryExpandTree).
         //
-        // - Accumulates effort into the node.
-        // - Only considers leaf nodes for expansion.
-        // - Prevents overgrowth: tree size must be < active_nodes * expand_factor.
-        // - Requires that all open nodes have been visited at least once.
-        // - Restricts expansion to the shallowest timed-out leaves.
-        // - Adds randomized throttling when tree size is already large.
+        // CRITICAL differences from paper's pure semantics:
+        //   - Paper: TryExpandTree globally selects ANY shallowest leaf to expand
+        //   - Z3: We can only expand `n` (because we only have split literals for it)
+        //   - Compromise: Use paper's gates, but add check that `n` IS the shallowest
         //
-        // Returns true if the node should be split, false if it should be reopened.
-        bool should_expand(node<Config>* n, unsigned effort) {
-            if (!n || n->get_status() != status::active)
-                return false;
-            n->add_effort(effort);
-            if (!n->is_leaf())
+        // CRITICAL timing semantics:
+        //   - Paper: node.time updated BEFORE TryExpandTree is called
+        //   - Implementation: n->add_effort() called BEFORE this function
+        //
+        // Algorithm 4 gates (with correct semantics):
+        //   Line 2-3:  if |tree| >= n then [if |tree| >= k*n then return]  // SEPARATE checks
+        //   Line 5-6:  if ∃node with status=NEW then return
+        //   Line 7-9:  r ← Random(); if r >= 1/p then return              // INDEPENDENT of size
+        //   Line 10:   node ← SelectShallowestLeaf(tree)                   // GLOBAL selection
+        //
+        // Paper's optimization: |tree| excludes nodes with node.time >= 4·TS
+        //
+        // Returns true if node `n` should be expanded.
+        bool should_split(node<Config>* n) {
+            if (!n || !n->is_leaf())
                 return false;
 
-            unsigned active = std::max(1u, count_active_nodes(m_root.get()));
-            unsigned size = count_unsolved_nodes(m_root.get());
-
-            if (size >= active * m_expand_factor)
-                return false;
+            // Use optimized tree size computation (excludes heavily timed-out nodes)
+            // Paper's optimization after Algorithm 4: exclude nodes where node.time >= 4·TS
+            unsigned tree_size = count_nodes_for_expansion(m_root.get());
+            unsigned num_workers = std::max(1u, m_num_workers);
+            unsigned k = m_expand_factor;
+            
+            // Gate 2-3: Size constraints (Algorithm 4, lines 2-4)
+            // CRITICAL: These are SEPARATE checks, not combined
+            if (tree_size >= num_workers) {
+                // Soft threshold reached - inner check for hard threshold
+                if (tree_size >= k * num_workers)
+                    return false;  // Hard cutoff - MUST abort
+                // Between n and k*n - continue to other gates
+            }
+            
+            // Gate 4: NEW node check (Algorithm 4, line 5)
             if (has_unvisited_open_node(m_root.get()))
                 return false;
-
-            unsigned shallowest = shallowest_timed_out_leaf_depth(m_root.get(), UINT_MAX);
-            if (shallowest == UINT_MAX || n->depth() != shallowest)
+            
+            // Gate 5: Random throttling (Algorithm 4, lines 7-9)
+            // CRITICAL: Independent of size (not "if size >= n && random")
+            // r ← Random() ∈ ]0,1[; if r >= 1/p then abort
+            // With p=2, this gives 50% rejection
+            if (m_rand(2) != 0)
                 return false;
 
-            if (size >= active && m_rand(2) != 0)
-                return false;
-
-            return true;
+            // Gate 6: Select shallowest timed-out leaf (Algorithm 4, line 10)
+            // Paper: globally select shallowest leaf
+            // Z3 limitation: check if `n` IS the shallowest (we can only expand it)
+            unsigned shallowest_timed_out_leaf_depth = UINT_MAX;
+            find_shallowest_timed_out_leaf_depth(m_root.get(), shallowest_timed_out_leaf_depth);
+            
+            // Only expand if `n` is a shallowest timed-out leaf
+            return n->is_leaf() &&
+                n->effort_spent() > 0 &&
+                n->depth() == shallowest_timed_out_leaf_depth;
         }
 
         // Bubble to the highest ancestor where ALL literals in the resolvent
@@ -459,21 +556,49 @@ namespace search_tree {
             m_effort_unit = std::max<unsigned>(1, effort_unit);
         }
 
+        void set_num_workers(unsigned num_workers) {
+            m_num_workers = std::max<unsigned>(1, num_workers);
+        }
+
         void reset() {
             m_root = alloc(node<Config>, m_null_literal, nullptr);
             m_root->set_status(status::active);
             m_root->mark_activated();
         }
 
-        // On timeout, either expand the current leaf or reopen the node for a
-        // later revisit, depending on the tree-expansion heuristic.
+        // On timeout, update effort and decide whether to expand the tree.
+        //
+        // Paper's semantics (Algorithm 1, line 6 & 16):
+        //   1. node.time ← node.time + t  (BEFORE calling TryExpandTree)
+        //   2. TryExpandTree(tree, 1)     (operates on tree globally)
+        //
+        // Z3's constraint:
+        //   We only have split literals for the node that just timed out.
+        //   So we can only expand `n`, but we still use TryExpandTree's logic
+        //   to decide WHETHER to expand based on global tree state.
+        //
+        // Parameters:
+        //   n - the node that just timed out
+        //   a, b - the split literals for node n
+        //   effort - time/conflicts spent (added to node.time)
         void split(node<Config> *n, literal const &a, literal const &b, unsigned effort = 1) {
             if (!n || n->get_status() != status::active)
                 return;
-            if (should_expand(n, effort))
+            
+            // Update effort BEFORE attempting expansion (matches paper's Algorithm 1, line 6)
+            n->add_effort(effort); // each timeout → +effort_unit → band increases by exactly 1
+            
+            // Decide whether to expand the tree (paper's Algorithm 4 logic)
+            // Note: Paper would globally select shallowest leaf, but we can only expand `n`
+            // because we only have split literals for it. However, we still check:
+            //   1. If n is a valid expansion candidate (is it shallowest?)
+            //   2. If tree-wide expansion conditions are met
+            if (should_split(n)) {
                 n->split(a, b);
-            else
-                n->set_status(status::open);
+            } else {
+                // Expansion rejected - reopen node for future exploration
+                release_active_node(n, status::open);
+            }
         }
 
         // conflict is given by a set of literals.
@@ -524,6 +649,13 @@ namespace search_tree {
 
         node<Config> *find_active_node() {
             return m_root->find_active_node();
+        }
+
+        void release_active_node(node<Config>* n, status new_status) {
+            if (!n || n->get_status() != status::active)
+                return;
+            n->dec_active_workers();
+            n->set_status(new_status);
         }
 
         vector<literal> const &get_core_from_root() const {
