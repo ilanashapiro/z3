@@ -231,12 +231,17 @@ namespace smt {
             trial.append(asms);
             trial.push_back(not_lit);
 
+            unsigned old_limit = ctx->get_fparams().m_max_conflicts;
+            ctx->get_fparams().m_max_conflicts = 100;
+
             try {
                 is_sat = ctx->check(trial.size(), trial.data());
             }
             catch (...) {
                 is_sat = l_undef;
             }
+
+            ctx->get_fparams().m_max_conflicts = old_limit;
 
             switch (is_sat) {
             case l_undef:
@@ -255,6 +260,7 @@ namespace smt {
                 core_exprs.append(ctx->unsat_core());
 
                 if (!core_exprs.contains(not_lit)) {
+                    // unknown := core_exprs \ mus
                     unknown.reset();
                     for (expr* c : core_exprs) {
                         if (!mus.contains(c))
@@ -275,52 +281,6 @@ namespace smt {
         out_core.reset();
         out_core.append(mus);
     }
-
-    // void parallel::worker::minimize_unsat_core(expr_ref_vector& out_core) {
-    //     expr_ref_vector core(m), mus(m), trial(m), new_core(m);
-    //     core.append(out_core);
-
-    //     while (!core.empty()) {
-    //         if (!m.inc()) break;
-
-    //         expr* lit = core.back();
-    //         core.pop_back();
-
-    //         trial.reset();
-    //         trial.append(asms);
-    //         trial.append(mus);
-    //         trial.append(core);
-
-    //         lbool r = l_undef;
-    //         try {
-    //             r = ctx->check(trial.size(), trial.data());
-    //         }
-    //         catch (...) {
-    //             r = l_undef;
-    //         }
-
-    //         if (r == l_false) {
-    //             new_core.reset();
-    //             new_core.append(ctx->unsat_core());
-
-    //             expr_ref_vector filtered(m);
-    //             for (expr* e : new_core) {
-    //                 if (!asms.contains(e))
-    //                     continue;
-    //                 if (!mus.contains(e))
-    //                     filtered.push_back(e);
-    //             }
-    //             core.reset();
-    //             core.append(filtered);
-    //         }
-    //         else {
-    //             mus.push_back(lit);
-    //         }
-    //     }
-
-    //     out_core.reset();
-    //     out_core.append(mus);
-    // }
 
     parallel::sls_worker::sls_worker(parallel& p)
         : p(p), b(p.m_batch_manager), m(), m_g2l(p.ctx.m, m), m_l2g(m, p.ctx.m) {
