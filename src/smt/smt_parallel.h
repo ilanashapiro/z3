@@ -149,6 +149,7 @@ namespace smt {
             expr_ref get_split_atom();
 
             lbool check_cube(expr_ref_vector const& cube);
+            void minimize_unsat_core(expr_ref_vector& core);
             void share_units();
 
             void update_max_thread_conflicts() {
