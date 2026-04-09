@@ -172,6 +172,7 @@ namespace smt {
             unsigned m_shared_clause_limit = 0; // remembers the index into shared_clause_trail marking the boundary between "old" and "new" clauses to share
             uint_set m_known_shared_clause_ids;
             vector<local_shared_clause> m_shared_clauses;
+            obj_hashtable<expr> m_emitted_learned_clauses;
             std::unordered_map<node*, expr_ref> m_node_guards;
             obj_map<expr, node*> m_guard_to_node;
             
@@ -179,9 +180,11 @@ namespace smt {
             expr_ref get_or_create_guard(node* n);
             bool is_guard(expr* e, node*& n) const;
             void extract_tree_core(expr_ref_vector const& unsat_core, expr_ref_vector& tree_core);
+            expr_ref mk_clause_expr(clause const& cls);
 
             lbool check_cube(expr_ref_vector const& cube, node* current_node);
             void share_units(node* current_node);
+            void share_lemmas(node* current_node);
             void collect_shared_clauses(node* current_node);
             void append_active_clause_guards(node* current_node, expr_ref_vector& target);
 

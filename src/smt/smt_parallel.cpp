@@ -204,6 +204,7 @@ namespace smt {
             }
             if (m_config.m_share_units)
                 share_units(node);
+            share_lemmas(node);
         }
     }
 
@@ -302,6 +303,17 @@ namespace smt {
         }
     }
 
+    expr_ref parallel::worker::mk_clause_expr(clause const& cls) {
+        expr_ref result(m);
+        expr_ref_vector lits(m);
+        for (unsigned i = 0; i < cls.get_num_literals(); ++i)
+            lits.push_back(ctx->literal2expr(cls.get_literal(i)));
+        if (lits.empty())
+            return result;
+        result = lits.size() == 1 ? lits[0].get() : m.mk_or(lits);
+        return result;
+    }
+
     parallel::sls_worker::sls_worker(parallel& p)
         : p(p), b(p.m_batch_manager), m(), m_g2l(p.ctx.m, m), m_l2g(m, p.ctx.m) {
         IF_VERBOSE(1, verbose_stream() << "Initialized SLS portfolio thread\n");
@@ -339,6 +351,33 @@ namespace smt {
             b.collect_clause(m_l2g, id, current_node, e);
         }
         m_num_shared_units = sz;
+    }
+
+    void parallel::worker::share_lemmas(node* current_node) {
+        for (clause* cls : ctx->get_lemmas()) {
+            if (!cls || !cls->is_learned())
+                continue;
+            if (cls->get_num_literals() == 0 || cls->get_num_literals() > 3)
+                continue;
+
+            bool original_atoms_only = true;
+            for (unsigned i = 0; i < cls->get_num_literals(); ++i) {
+                literal lit = cls->get_literal(i);
+                if (lit.var() >= m_num_initial_atoms || !ctx->bool_var2expr(lit.var())) {
+                    original_atoms_only = false;
+                    break;
+                }
+            }
+            if (!original_atoms_only)
+                continue;
+
+            expr_ref clause_expr = mk_clause_expr(*cls);
+            if (!clause_expr || m_emitted_learned_clauses.contains(clause_expr.get()))
+                continue;
+
+            m_emitted_learned_clauses.insert(clause_expr.get());
+            b.collect_clause(m_l2g, id, current_node, clause_expr);
+        }
     }
 
     void parallel::worker::simplify() {
