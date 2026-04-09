@@ -196,21 +196,24 @@ namespace smt {
                 LOG_WORKER(1, " found unsat cube\n");
                 b.backtrack(m_l2g, tree_core, node);
 
+                auto* conflict_scope = b.current_scope(m_l2g, node, tree_core);
+
                 if (m_config.m_share_conflicts)
-                    b.collect_clause(m_l2g, id, b.current_scope(m_l2g, node, tree_core), mk_not(mk_and(tree_core)));
+                    b.collect_clause(m_l2g, id, conflict_scope, mk_not(mk_and(tree_core)));
+
+                share_lemmas(conflict_scope);
 
                 break;
             }
             }
             if (m_config.m_share_units)
                 share_units(node);
-            share_lemmas(node);
         }
     }
 
     parallel::worker::worker(unsigned id, parallel &p, expr_ref_vector const &_asms)
         : id(id), p(p), b(p.m_batch_manager), asms(m), m_active_clause_guards(m),
-          m_smt_params(p.ctx.get_fparams()), m_g2l(p.ctx.m, m),
+          m_emitted_learned_clause_roots(m), m_smt_params(p.ctx.get_fparams()), m_g2l(p.ctx.m, m),
           m_l2g(m, p.ctx.m) {
         for (auto e : _asms)
             asms.push_back(m_g2l(e));
@@ -353,30 +356,74 @@ namespace smt {
         m_num_shared_units = sz;
     }
 
-    void parallel::worker::share_lemmas(node* current_node) {
+    void parallel::worker::share_lemmas(node* conflict_scope) {
+        unsigned min_activity = std::max(2u, ctx->get_lemma_avg_activity());
         for (clause* cls : ctx->get_lemmas()) {
             if (!cls || !cls->is_learned())
                 continue;
-            if (cls->get_num_literals() == 0 || cls->get_num_literals() > 3)
+            if (cls->get_activity() < min_activity)
                 continue;
 
+            expr_ref_vector payload(m);
+            node* valid_at = nullptr;
             bool original_atoms_only = true;
             for (unsigned i = 0; i < cls->get_num_literals(); ++i) {
                 literal lit = cls->get_literal(i);
-                if (lit.var() >= m_num_initial_atoms || !ctx->bool_var2expr(lit.var())) {
+                expr* atom = ctx->bool_var2expr(lit.var());
+                if (!atom) {
                     original_atoms_only = false;
                     break;
                 }
+
+                node* scope = nullptr;
+                if (is_guard(atom, scope)) {
+                    if (!lit.sign() || !scope) {
+                        original_atoms_only = false;
+                        break;
+                    }
+                    if (!valid_at || search_tree::tree<cube_config>::is_ancestor(valid_at, scope)) {
+                        valid_at = scope;
+                    }
+                    else if (!search_tree::tree<cube_config>::is_ancestor(scope, valid_at)) {
+                        original_atoms_only = false;
+                        break;
+                    }
+                    continue;
+                }
+
+                if (lit.var() >= m_num_initial_atoms) {
+                    original_atoms_only = false;
+                    break;
+                }
+                payload.push_back(ctx->literal2expr(lit));
             }
-            if (!original_atoms_only)
+            if (!original_atoms_only || payload.empty() || payload.size() > 3)
                 continue;
 
-            expr_ref clause_expr = mk_clause_expr(*cls);
-            if (!clause_expr || m_emitted_learned_clauses.contains(clause_expr.get()))
+            if (conflict_scope) {
+                if (!valid_at) {
+                    valid_at = conflict_scope;
+                }
+                else if (search_tree::tree<cube_config>::is_ancestor(valid_at, conflict_scope)) {
+                    valid_at = conflict_scope;
+                }
+                else if (!search_tree::tree<cube_config>::is_ancestor(conflict_scope, valid_at)) {
+                    continue;
+                }
+            }
+
+            expr_ref clause_expr(payload.size() == 1 ? payload[0].get() : m.mk_or(payload), m);
+            if (!clause_expr)
                 continue;
 
-            m_emitted_learned_clauses.insert(clause_expr.get());
-            b.collect_clause(m_l2g, id, current_node, clause_expr);
+            node* old_scope = nullptr;
+            if (m_emitted_learned_clause_scope.find(clause_expr.get(), old_scope) &&
+                (old_scope == valid_at || (old_scope && valid_at && search_tree::tree<cube_config>::is_ancestor(old_scope, valid_at))))
+                continue;
+
+            m_emitted_learned_clause_roots.push_back(clause_expr);
+            m_emitted_learned_clause_scope.insert(clause_expr.get(), valid_at);
+            b.collect_clause(m_l2g, id, valid_at, clause_expr);
         }
     }
 
