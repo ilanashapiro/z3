@@ -64,52 +64,6 @@ namespace smt {
 
 namespace smt {
 
-    void parallel::sls_worker::run() {
-        ptr_vector<expr> assertions;
-        p.ctx.get_assertions(assertions);
-        for (expr* e : assertions)
-            m_sls->assert_expr(m_g2l(e));
-
-        lbool res = l_undef;
-        try {
-            if (!m.inc())
-                return;
-            res = m_sls->check();
-        } 
-        catch (z3_exception& ex) {
-            // Cancellation is normal in portfolio mode
-            if (m.limit().is_canceled()) {
-                IF_VERBOSE(1, verbose_stream() << "SLS worker canceled\n");
-                return;
-            }
-
-            if (strstr(ex.what(), "unsupported for sls") != nullptr) {
-                IF_VERBOSE(1, verbose_stream() << "SLS opted out: " << ex.what() << "\n");
-                return;
-            }
-
-            // Anything else is a real error
-            IF_VERBOSE(1, verbose_stream() << "SLS threw exception: " << ex.what() << "\n");
-            b.set_exception(ex.what());
-            return;
-        }
-
-        if (res == l_true) {         
-            IF_VERBOSE(2, verbose_stream() << "SLS worker found SAT\n");
-            model_ref mdl = m_sls->get_model();
-            b.set_sat(m_l2g, *mdl);
-        }
-    }
-
-    void parallel::sls_worker::cancel() {
-        IF_VERBOSE(1, verbose_stream() << " SLS WORKER cancelling\n");
-        m.limit().cancel();
-    }
-
-    void parallel::sls_worker::collect_statistics(::statistics &st) const {
-        m_sls->collect_statistics(st);
-    }
-
     void parallel::worker::run() {
         search_tree::node<cube_config> *node = nullptr;
         expr_ref_vector cube(m);
@@ -195,13 +149,6 @@ namespace smt {
 
         smt_parallel_params pp(p.ctx.m_params);
         m_config.m_inprocessing = pp.inprocessing();
-    }
-
-    parallel::sls_worker::sls_worker(parallel& p)
-        : p(p), b(p.m_batch_manager), m(), m_g2l(p.ctx.m, m), m_l2g(m, p.ctx.m) {
-        IF_VERBOSE(1, verbose_stream() << "Initialized SLS portfolio thread\n");
-        m_params.append(p.ctx.m_params);
-        m_sls = alloc(sls::smt_solver, m, m_params);
     }
 
     void parallel::worker::share_units() {
@@ -334,7 +281,7 @@ namespace smt {
             SASSERT(p.ctx.m_unsat_core.empty());
             for (auto e : m_search_tree.get_core_from_root())
                p.ctx.m_unsat_core.push_back(e);
-            cancel_background_threads();
+            cancel_workers();
         }
     }
 
@@ -443,7 +390,7 @@ namespace smt {
             return;
         m_state = state::is_sat;
         p.ctx.set_model(m.translate(l2g));
-        cancel_background_threads();
+        cancel_workers();
     }
 
     void parallel::batch_manager::set_unsat(ast_translation &l2g, expr_ref_vector const &unsat_core) {
@@ -457,7 +404,7 @@ namespace smt {
         SASSERT(p.ctx.m_unsat_core.empty());
         for (expr *e : unsat_core)
             p.ctx.m_unsat_core.push_back(l2g(e));
-        cancel_background_threads();
+        cancel_workers();
     }
 
     void parallel::batch_manager::set_exception(unsigned error_code) {
@@ -467,7 +414,7 @@ namespace smt {
             return;
         m_state = state::is_exception_code;
         m_exception_code = error_code;
-        cancel_background_threads();
+        cancel_workers();
     }
 
     void parallel::batch_manager::set_exception(std::string const &msg) {
@@ -477,7 +424,7 @@ namespace smt {
             return;
         m_state = state::is_exception_msg;
         m_exception_msg = msg;
-        cancel_background_threads();
+        cancel_workers();
     }
 
     lbool parallel::batch_manager::get_result() const {
@@ -551,7 +498,6 @@ namespace smt {
             scoped_clear(parallel &p) : p(p) {}
             ~scoped_clear() {
                 p.m_workers.reset();
-                p.m_sls_worker = nullptr;
             }
         };
         scoped_clear clear(*this);
@@ -560,7 +506,6 @@ namespace smt {
         m_workers.reset();
 
         smt_parallel_params pp(ctx.m_params);
-        m_should_run_sls = pp.sls();
         
         scoped_limits sl(m.limit());
         flet<unsigned> _nt(ctx.m_fparams.m_threads, 1);
@@ -569,20 +514,12 @@ namespace smt {
             m_workers.push_back(alloc(worker, i, *this, asms));
         for (auto w : m_workers)
             sl.push_child(&(w->limit()));
-        if (m_should_run_sls) {
-            m_sls_worker = alloc(sls_worker, *this);
-            sl.push_child(&(m_sls_worker->limit()));
-        }
 
         // Launch threads
         vector<std::thread> threads;
-        threads.resize(m_should_run_sls ? num_threads + 1 : num_threads); // +1 for sls worker
+        threads.resize(num_threads);
         for (unsigned i = 0; i < num_threads; ++i)
             threads[i] = std::thread([&, i]() { m_workers[i]->run(); });
-        
-        // the final thread runs the sls worker
-        if (m_should_run_sls)
-            threads[num_threads] = std::thread([&]() { m_sls_worker->run(); });
 
         // Wait for all threads to finish
         for (auto &th : threads)
@@ -591,8 +528,6 @@ namespace smt {
         for (auto w : m_workers)
             w->collect_statistics(ctx.m_aux_stats);
         m_batch_manager.collect_statistics(ctx.m_aux_stats);
-        if (m_should_run_sls)
-            m_sls_worker->collect_statistics(ctx.m_aux_stats);
 
         return m_batch_manager.get_result();
     }
