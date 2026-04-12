@@ -449,12 +449,16 @@ namespace smt {
 
             lbool r = check_cube(cube);
 
-            if (b.lease_canceled(lease)) {
+            if (m.limit().is_canceled() && b.lease_canceled(lease)) {
                 LOG_WORKER(1, " abandoning canceled lease\n");
                 b.abandon_lease(id, lease);
                 m.limit().reset_cancel();
                 lease = {};
                 continue;
+            }
+
+            if (m.limit().is_canceled() && !b.is_batch_running()) {
+                return;
             }
 
             if (!m.inc()) {
@@ -1086,7 +1090,7 @@ namespace smt {
             if (!m.limit().is_canceled())
                 b.set_exception(err.error_code());
         } catch (z3_exception &ex) {
-            if (!m.limit().is_canceled())
+            if (!m.limit().is_canceled() && strstr(ex.what(), "canceled") == nullptr)
                 b.set_exception(ex.what());
         } catch (...) {
             if (!m.limit().is_canceled())
