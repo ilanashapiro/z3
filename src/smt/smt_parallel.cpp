@@ -332,6 +332,9 @@ namespace smt {
 
     void parallel::worker::cancel_lease() {
         LOG_WORKER(1, " canceling lease\n");
+        // Track that this worker had a lease cancellation
+        m_had_lease_cancel.store(true, std::memory_order_release);
+        // Apply cancellation immediately for on-demand interruption
         m.limit().inc_cancel();
     }
 
@@ -360,10 +363,12 @@ namespace smt {
                 if (pending.node != lease.node ||
                     pending.epoch != lease.epoch ||
                     pending.cancel_epoch != lease.cancel_epoch) {
+                    // Signal the worker to cancel its lease (on-demand interruption)
                     p.m_workers[worker_id]->cancel_lease();
                     m_pending_lease_cancels[worker_id] = lease;
                 }
-                release_lease_unlocked(worker_id, lease.node, lease.epoch);
+                // Don't retire the lease yet - let the worker acknowledge first
+                // The lease will be retired after the worker acknowledges
             }
         }
     }
@@ -434,21 +439,43 @@ namespace smt {
 
     parallel::batch_manager::cancel_action parallel::batch_manager::check_cancel(unsigned worker_id, node_lease &lease, reslimit &limit) {
         std::scoped_lock lock(mux);
-        if (m_state != state::is_running)
-            return cancel_action::stop_worker;
+        
+        // First: Handle pending canceled lease (must come before state check)
+        // This ensures we clean up canceled leases even during shutdown
         if (m_search_tree.is_lease_canceled(lease.node, lease.cancel_epoch)) {
+            bool found_matching_pending = false;
             if (worker_id < m_pending_lease_cancels.size()) {
                 auto &pending = m_pending_lease_cancels[worker_id];
                 if (pending.node == lease.node &&
                     pending.epoch == lease.epoch &&
                     pending.cancel_epoch == lease.cancel_epoch) {
                     limit.dec_cancel();
+                    // Retire the lease now that worker is exiting it
+                    release_lease_unlocked(worker_id, lease.node, lease.epoch);
                     pending = {};
+                    // Reset the lease-cancel flag now that we've acknowledged this specific cancel
+                    if (worker_id < p.m_workers.size()) {
+                        p.m_workers[worker_id]->reset_lease_cancel_flag();
+                    }
+                    found_matching_pending = true;
                 }
             }
+            // If lease is canceled but no matching pending token, this is suspicious
+            // (suggests potential invariant violation - should be rare)
+            if (!found_matching_pending && worker_id < m_pending_lease_cancels.size()) {
+                IF_VERBOSE(0, verbose_stream() << "Warning: canceled lease without matching pending token for worker " << worker_id << "\n");
+                SASSERT(false && "canceled lease should have matching pending token");
+            }
             lease = {};
+            // If we're shutting down, we already cleaned up, so return stop_worker
+            if (m_state != state::is_running)
+                return cancel_action::stop_worker;
             return cancel_action::continue_search;
         }
+        
+        // Then: Check global state
+        if (m_state != state::is_running)
+            return cancel_action::stop_worker;
         if (limit.is_canceled())
             return cancel_action::stop_worker;
         return cancel_action::none;
@@ -504,11 +531,17 @@ namespace smt {
         try {
             r = ctx->check(asms.size(), asms.data());
         } catch (z3_error &err) {
-            b.set_exception(err.error_code(), is_cancellation_exception(err.what()));
+            // If we had a lease cancel, this is likely a cancellation-induced exception
+            bool is_lease_cancel = m_had_lease_cancel.load(std::memory_order_acquire);
+            b.set_exception(err.error_code(), is_lease_cancel || is_cancellation_exception(err.what()));
         } catch (z3_exception &ex) {
-            b.set_exception(ex.what(), is_cancellation_exception(ex.what()));
+            // If we had a lease cancel, this is likely a cancellation-induced exception
+            bool is_lease_cancel = m_had_lease_cancel.load(std::memory_order_acquire);
+            b.set_exception(ex.what(), is_lease_cancel || is_cancellation_exception(ex.what()));
         } catch (...) {
-            b.set_exception("unknown exception", false);
+            // If we had a lease cancel, this is likely a cancellation-induced exception
+            bool is_lease_cancel = m_had_lease_cancel.load(std::memory_order_acquire);
+            b.set_exception("unknown exception", is_lease_cancel);
         }
         asms.shrink(asms.size() - cube.size());
         LOG_WORKER(1, " DONE checking cube " << r << "\n";);

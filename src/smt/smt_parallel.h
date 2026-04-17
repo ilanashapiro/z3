@@ -23,6 +23,8 @@ Revision History:
 #include "ast/sls/sls_smt_solver.h"
 #include <thread>
 #include <mutex>
+#include <atomic>
+#include <condition_variable>
 
 
 namespace smt {
@@ -129,7 +131,6 @@ namespace smt {
             void backtrack(ast_translation& l2g, unsigned worker_id, expr_ref_vector const& core, node_lease const& lease);
             void try_split(ast_translation& l2g, unsigned worker_id, node_lease const& lease, expr* atom, unsigned effort);
             void release_lease(unsigned worker_id, node_lease const& lease);
-            bool lease_canceled(node_lease const& lease);
             cancel_action check_cancel(unsigned worker_id, node_lease& lease, reslimit& limit);
             cancel_action check_cancel(reslimit& limit);
 
@@ -171,6 +172,9 @@ namespace smt {
             unsigned m_num_initial_atoms = 0;
             unsigned m_shared_clause_limit = 0; // remembers the index into shared_clause_trail marking the boundary between "old" and "new" clauses to share
             
+            // Track if this worker had a lease cancellation to help recognize cancellation exceptions
+            std::atomic<bool> m_had_lease_cancel{false};
+            
             expr_ref get_split_atom();
 
             lbool check_cube(expr_ref_vector const& cube, node_lease const& lease);
@@ -190,6 +194,9 @@ namespace smt {
 
             void cancel();
             void cancel_lease();
+            void reset_lease_cancel_flag() {
+                m_had_lease_cancel.store(false, std::memory_order_release);
+            }
             void collect_statistics(::statistics& st) const;
 
             reslimit& limit() {
