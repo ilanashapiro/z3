@@ -130,7 +130,7 @@ namespace smt {
             LOG_WORKER(1, " CUBE SIZE IN MAIN LOOP: " << cube.size() << "\n");
             lbool r = check_cube(cube, lease);
 
-            switch (b.check_cancel(lease, m.limit())) {
+            switch (b.check_cancel(id, lease, m.limit())) {
             case batch_manager::cancel_action::continue_search:
                 LOG_WORKER(1, " abandoning canceled lease\n");
                 continue;
@@ -354,7 +354,15 @@ namespace smt {
             
             // only cancel workers that currently hold a lease, and whose lease is canceled
             if (lease.node && m_search_tree.is_lease_canceled(lease.node, lease.cancel_epoch)) {
-                p.m_workers[worker_id]->cancel_lease();
+                if (worker_id >= m_pending_lease_cancels.size())
+                    m_pending_lease_cancels.resize(worker_id + 1);
+                auto const& pending = m_pending_lease_cancels[worker_id];
+                if (pending.node != lease.node ||
+                    pending.epoch != lease.epoch ||
+                    pending.cancel_epoch != lease.cancel_epoch) {
+                    p.m_workers[worker_id]->cancel_lease();
+                    m_pending_lease_cancels[worker_id] = lease;
+                }
                 release_lease_unlocked(worker_id, lease.node, lease.epoch);
             }
         }
@@ -424,12 +432,20 @@ namespace smt {
         release_lease_unlocked(worker_id, lease.node, lease.epoch);
     }
 
-    parallel::batch_manager::cancel_action parallel::batch_manager::check_cancel(node_lease &lease, reslimit &limit) {
+    parallel::batch_manager::cancel_action parallel::batch_manager::check_cancel(unsigned worker_id, node_lease &lease, reslimit &limit) {
         std::scoped_lock lock(mux);
         if (m_state != state::is_running)
             return cancel_action::stop_worker;
         if (m_search_tree.is_lease_canceled(lease.node, lease.cancel_epoch)) {
-            limit.dec_cancel();
+            if (worker_id < m_pending_lease_cancels.size()) {
+                auto &pending = m_pending_lease_cancels[worker_id];
+                if (pending.node == lease.node &&
+                    pending.epoch == lease.epoch &&
+                    pending.cancel_epoch == lease.cancel_epoch) {
+                    limit.dec_cancel();
+                    pending = {};
+                }
+            }
             lease = {};
             return cancel_action::continue_search;
         }
@@ -634,6 +650,8 @@ namespace smt {
         m_search_tree.set_effort_unit(initial_max_thread_conflicts);
         m_worker_leases.reset();
         m_worker_leases.resize(p.m_workers.size());
+        m_pending_lease_cancels.reset();
+        m_pending_lease_cancels.resize(p.m_workers.size());
     }
 
     void parallel::batch_manager::collect_statistics(::statistics &st) const {

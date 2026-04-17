@@ -79,6 +79,7 @@ namespace smt {
             using node = search_tree::node<cube_config>;
             search_tree::tree<cube_config> m_search_tree;
             vector<node_lease> m_worker_leases;
+            vector<node_lease> m_pending_lease_cancels;
             
             unsigned m_exception_code = 0;
             std::string m_exception_msg;
@@ -129,7 +130,7 @@ namespace smt {
             void try_split(ast_translation& l2g, unsigned worker_id, node_lease const& lease, expr* atom, unsigned effort);
             void release_lease(unsigned worker_id, node_lease const& lease);
             bool lease_canceled(node_lease const& lease);
-            cancel_action check_cancel(node_lease& lease, reslimit& limit);
+            cancel_action check_cancel(unsigned worker_id, node_lease& lease, reslimit& limit);
             cancel_action check_cancel(reslimit& limit);
 
             void collect_clause(ast_translation& l2g, unsigned source_worker_id, expr* clause);
