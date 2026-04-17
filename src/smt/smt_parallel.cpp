@@ -140,14 +140,8 @@ namespace smt {
                 continue;
             }
 
-            if (!m.inc()) {
-                if (m.limit().is_canceled()) {
-                    LOG_WORKER(1, " stopping after cancellation\n");
-                    return;
-                }
-                b.set_exception("context cancelled");
+            if (!m.inc())
                 return;
-            }
 
             switch (r) {
             case l_undef: {
