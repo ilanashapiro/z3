@@ -108,14 +108,20 @@ namespace smt {
             void cancel_closed_leases_unlocked(unsigned source_worker_id);
 
         public:
+            enum class cancel_action {
+                none,
+                continue_search,
+                stop_worker
+            };
+
             batch_manager(ast_manager& m, parallel& p) : m(m), p(p), m_search_tree(expr_ref(m)) { }
 
             void initialize(unsigned initial_max_thread_conflicts = 1000); // TODO: pass in from worker defaults
 
             void set_unsat(ast_translation& l2g, expr_ref_vector const& unsat_core);
             void set_sat(ast_translation& l2g, model& m);
-            void set_exception(std::string const& msg);
-            void set_exception(unsigned error_code);
+            void set_exception(std::string const& msg, bool is_cancellation = false);
+            void set_exception(unsigned error_code, bool is_cancellation = false);
             void collect_statistics(::statistics& st) const;
 
             bool get_cube(ast_translation& g2l, unsigned id, expr_ref_vector& cube, bool is_first_run, node_lease& lease);
@@ -123,6 +129,8 @@ namespace smt {
             void try_split(ast_translation& l2g, unsigned worker_id, node_lease const& lease, expr* atom, unsigned effort);
             void release_lease(unsigned worker_id, node_lease const& lease);
             bool lease_canceled(node_lease const& lease);
+            cancel_action check_cancel(node_lease& lease, reslimit& limit);
+            cancel_action check_cancel(reslimit& limit);
 
             void collect_clause(ast_translation& l2g, unsigned source_worker_id, expr* clause);
             expr_ref_vector return_shared_clauses(ast_translation& g2l, unsigned& worker_limit, unsigned worker_id);
@@ -164,7 +172,7 @@ namespace smt {
             
             expr_ref get_split_atom();
 
-            lbool check_cube(expr_ref_vector const& cube);
+            lbool check_cube(expr_ref_vector const& cube, node_lease const& lease);
             void share_units();
 
             void update_max_thread_conflicts() {
@@ -180,6 +188,7 @@ namespace smt {
             void collect_shared_clauses();
 
             void cancel();
+            void cancel_lease();
             void collect_statistics(::statistics& st) const;
 
             reslimit& limit() {

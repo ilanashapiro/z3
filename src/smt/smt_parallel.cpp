@@ -78,17 +78,14 @@ namespace smt {
 
         lbool res = l_undef;
         try {
-            if (!m.inc())
+            if (!m.inc()) {
+                if (b.check_cancel(m.limit()) == batch_manager::cancel_action::stop_worker)
+                    return;
                 return;
+            }
             res = m_sls->check();
         } 
         catch (z3_exception& ex) {
-            // Cancellation is normal in portfolio mode
-            if (m.limit().is_canceled()) {
-                IF_VERBOSE(1, verbose_stream() << "SLS worker canceled\n");
-                return;
-            }
-
             if (strstr(ex.what(), "unsupported for sls") != nullptr) {
                 IF_VERBOSE(1, verbose_stream() << "SLS opted out: " << ex.what() << "\n");
                 return;
@@ -96,7 +93,7 @@ namespace smt {
 
             // Anything else is a real error
             IF_VERBOSE(1, verbose_stream() << "SLS threw exception: " << ex.what() << "\n");
-            b.set_exception(ex.what());
+            b.set_exception(ex.what(), is_cancellation_exception(ex.what()));
             return;
         }
 
@@ -131,17 +128,18 @@ namespace smt {
 
         check_cube_start:
             LOG_WORKER(1, " CUBE SIZE IN MAIN LOOP: " << cube.size() << "\n");
-            lbool r = check_cube(cube);
+            lbool r = check_cube(cube, lease);
 
-            if (b.lease_canceled(lease)) {
+            switch (b.check_cancel(lease, m.limit())) {
+            case batch_manager::cancel_action::continue_search:
                 LOG_WORKER(1, " abandoning canceled lease\n");
-                m.limit().reset_cancel();
-                lease = {};
                 continue;
-            }
-
-            if (!m.inc())
+            case batch_manager::cancel_action::stop_worker:
+                LOG_WORKER(1, " stopping due to cancellation\n");
                 return;
+            case batch_manager::cancel_action::none:
+                break;
+            }
 
             switch (r) {
             case l_undef: {
@@ -250,8 +248,11 @@ namespace smt {
     }
 
     void parallel::worker::simplify() {
-        if (!m.inc())
+        if (!m.inc()) {
+            if (b.check_cancel(m.limit()) == batch_manager::cancel_action::stop_worker)
+                return;
             return;
+        }
         // first attempt: one-shot simplification of the context.
         // a precise schedule of repeated simplification is TBD.
         // also, the in-processing simplifier should be applied to
@@ -325,8 +326,13 @@ namespace smt {
     }
 
     void parallel::worker::cancel() {
-        LOG_WORKER(1, " canceling\n");
+        LOG_WORKER(1, " terminating\n");
         m.limit().cancel();
+    }
+
+    void parallel::worker::cancel_lease() {
+        LOG_WORKER(1, " canceling lease\n");
+        m.limit().inc_cancel();
     }
 
     void parallel::batch_manager::release_lease_unlocked(unsigned worker_id, node* n, unsigned epoch) {
@@ -344,11 +350,13 @@ namespace smt {
         for (unsigned worker_id = 0; worker_id < n; ++worker_id) {
             if (worker_id == source_worker_id)
                 continue;
-            auto const& lease = m_worker_leases[worker_id];
+            auto const lease = m_worker_leases[worker_id];
             
             // only cancel workers that currently hold a lease, and whose lease is canceled
-            if (lease.node && m_search_tree.is_lease_canceled(lease.node, lease.cancel_epoch))
-                p.m_workers[worker_id]->cancel();
+            if (lease.node && m_search_tree.is_lease_canceled(lease.node, lease.cancel_epoch)) {
+                p.m_workers[worker_id]->cancel_lease();
+                release_lease_unlocked(worker_id, lease.node, lease.epoch);
+            }
         }
     }
 
@@ -416,9 +424,25 @@ namespace smt {
         release_lease_unlocked(worker_id, lease.node, lease.epoch);
     }
 
-    bool parallel::batch_manager::lease_canceled(node_lease const &lease) {
+    parallel::batch_manager::cancel_action parallel::batch_manager::check_cancel(node_lease &lease, reslimit &limit) {
         std::scoped_lock lock(mux);
-        return m_state == state::is_running && m_search_tree.is_lease_canceled(lease.node, lease.cancel_epoch);
+        if (m_state != state::is_running)
+            return cancel_action::stop_worker;
+        if (m_search_tree.is_lease_canceled(lease.node, lease.cancel_epoch)) {
+            limit.dec_cancel();
+            lease = {};
+            return cancel_action::continue_search;
+        }
+        if (limit.is_canceled())
+            return cancel_action::stop_worker;
+        return cancel_action::none;
+    }
+
+    parallel::batch_manager::cancel_action parallel::batch_manager::check_cancel(reslimit &limit) {
+        std::scoped_lock lock(mux);
+        if (m_state != state::is_running || limit.is_canceled())
+            return cancel_action::stop_worker;
+        return cancel_action::none;
     }
 
     void parallel::batch_manager::collect_clause(ast_translation &l2g, unsigned source_worker_id, expr *clause) {
@@ -452,7 +476,7 @@ namespace smt {
         return result;
     }
 
-    lbool parallel::worker::check_cube(expr_ref_vector const &cube) {
+    lbool parallel::worker::check_cube(expr_ref_vector const &cube, node_lease const &lease) {
         for (auto &atom : cube)
             asms.push_back(atom);
         lbool r = l_undef;
@@ -464,14 +488,11 @@ namespace smt {
         try {
             r = ctx->check(asms.size(), asms.data());
         } catch (z3_error &err) {
-            if (!m.limit().is_canceled())
-                b.set_exception(err.error_code());
+            b.set_exception(err.error_code(), is_cancellation_exception(err.what()));
         } catch (z3_exception &ex) {
-            if (!m.limit().is_canceled() && !is_cancellation_exception(ex.what()))
-                b.set_exception(ex.what());
+            b.set_exception(ex.what(), is_cancellation_exception(ex.what()));
         } catch (...) {
-            if (!m.limit().is_canceled())
-                b.set_exception("unknown exception");
+            b.set_exception("unknown exception", false);
         }
         asms.shrink(asms.size() - cube.size());
         LOG_WORKER(1, " DONE checking cube " << r << "\n";);
@@ -527,20 +548,20 @@ namespace smt {
         cancel_background_threads();
     }
 
-    void parallel::batch_manager::set_exception(unsigned error_code) {
+    void parallel::batch_manager::set_exception(unsigned error_code, bool is_cancellation) {
         std::scoped_lock lock(mux);
         IF_VERBOSE(1, verbose_stream() << "Batch manager setting exception code: " << error_code << ".\n");
-        if (m_state != state::is_running)
+        if (m_state != state::is_running || is_cancellation)
             return;
         m_state = state::is_exception_code;
         m_exception_code = error_code;
         cancel_background_threads();
     }
 
-    void parallel::batch_manager::set_exception(std::string const &msg) {
+    void parallel::batch_manager::set_exception(std::string const &msg, bool is_cancellation) {
         std::scoped_lock lock(mux);
         IF_VERBOSE(1, verbose_stream() << "Batch manager setting exception msg: " << msg << ".\n");
-        if (m_state != state::is_running)
+        if (m_state != state::is_running || is_cancellation)
             return;
         m_state = state::is_exception_msg;
         m_exception_msg = msg;
