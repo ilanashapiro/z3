@@ -339,6 +339,21 @@ namespace smt {
         m.limit().inc_cancel();
     }
 
+    void parallel::worker::preempt() {
+        // CAS ensures at most one inc_cancel is outstanding per preempt cycle.
+        // If the flag is already set (previous preempt not yet acknowledged), this is a no-op.
+        bool expected = false;
+        if (m_preempt.compare_exchange_strong(expected, true, std::memory_order_release)) {
+            LOG_WORKER(1, " preempted for load balancing\n");
+            m.limit().inc_cancel();
+        }
+    }
+
+    bool parallel::worker::acknowledge_preempt() {
+        bool expected = true;
+        return m_preempt.compare_exchange_strong(expected, false, std::memory_order_acquire);
+    }
+
     void parallel::batch_manager::release_lease_unlocked(unsigned worker_id, node* n, unsigned epoch) {
         if (worker_id >= m_worker_leases.size())
             return;
@@ -361,6 +376,20 @@ namespace smt {
                 p.m_workers[worker_id]->cancel_lease();
                 release_lease_unlocked(worker_id, lease.node, lease.epoch);
             }
+        }
+    }
+
+    void parallel::batch_manager::preempt_active_workers_unlocked(unsigned source_worker_id) {
+        for (unsigned i = 0; i < p.m_workers.size(); ++i) {
+            if (i == source_worker_id) continue;
+            if (i >= m_worker_leases.size()) continue;
+            auto const& wlease = m_worker_leases[i];
+            // Only preempt workers with an active, non-canceled lease.
+            // Workers whose leases are already canceled are being interrupted via cancel_lease();
+            // preempting them too would leave an unmatched inc_cancel in check_cancel.
+            if (!wlease.node) continue;
+            if (m_search_tree.is_lease_canceled(wlease.node, wlease.cancel_epoch)) continue;
+            p.m_workers[i]->preempt();
         }
     }
 
@@ -387,6 +416,8 @@ namespace smt {
 
         // terminate on-demand the workers that are currently exploring the now-closed nodes
         cancel_closed_leases_unlocked(worker_id);
+        // preempt remaining workers (on still-valid nodes) so they re-evaluate which node to work on
+        preempt_active_workers_unlocked(worker_id);
 
         IF_VERBOSE(1, m_search_tree.display(verbose_stream() << bounded_pp_exprs(core) << "\n"););
         if (m_search_tree.is_closed()) {
@@ -420,6 +451,8 @@ namespace smt {
             ++m_stats.m_num_cubes;
             m_stats.m_max_cube_depth = std::max(m_stats.m_max_cube_depth, lease.node->depth() + 1);
             IF_VERBOSE(1, verbose_stream() << "Batch manager splitting on literal: " << mk_bounded_pp(lit, m, 3) << "\n");
+            // New leaf nodes are available; preempt other workers so they re-evaluate which node to pick
+            preempt_active_workers_unlocked(worker_id);
         }
     }
 
@@ -431,17 +464,21 @@ namespace smt {
     parallel::batch_manager::cancel_action parallel::batch_manager::check_cancel(unsigned worker_id, node_lease &lease, reslimit &limit) {
         std::scoped_lock lock(mux);
 
-        if (m_search_tree.is_lease_canceled(lease.node, lease.cancel_epoch)) {
-            release_lease_unlocked(worker_id, lease.node, lease.epoch);
-            limit.dec_cancel();
+        bool lease_canceled = m_search_tree.is_lease_canceled(lease.node, lease.cancel_epoch);
+        bool preempted = worker_id < p.m_workers.size() && p.m_workers[worker_id]->acknowledge_preempt();
+
+        if (lease_canceled || preempted) {
+            release_lease_unlocked(worker_id, lease.node, lease.epoch); // idempotent — no-op if already cleared
+            // dec_cancel once per outstanding inc_cancel: lease cancel and preempt each call inc_cancel once.
+            if (lease_canceled) limit.dec_cancel(); // drains the lease-cancel inc
+            if (preempted)      limit.dec_cancel(); // drains the preempt inc
             lease = {};
             if (m_state != state::is_running)
                 return cancel_action::stop_worker;
-            // After dec_cancel, check if a real (non-lease) cancel is still in effect.
-            // set_cancel propagates absolute values, so a concurrent external cancel on the
-            // parent reslimit could have set this worker's m_cancel to 1, which dec_cancel
-            // would have zeroed out -- masking the external cancel. Checking the parent
-            // directly closes that window.
+            // After dec_cancel(s), check whether a genuine external cancel is still in effect.
+            // set_cancel propagates absolute values from the parent, so a concurrent external cancel
+            // could have been masked by our dec_cancel. Checking the parent reslimit directly closes
+            // that window.
             if (limit.is_canceled() || p.ctx.m.limit().is_canceled())
                 return cancel_action::stop_worker;
             return cancel_action::continue_search;

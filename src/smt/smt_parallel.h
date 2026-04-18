@@ -108,6 +108,7 @@ namespace smt {
 
             void release_lease_unlocked(unsigned worker_id, node* n, unsigned epoch);
             void cancel_closed_leases_unlocked(unsigned source_worker_id);
+            void preempt_active_workers_unlocked(unsigned source_worker_id);
 
         public:
             enum class cancel_action {
@@ -173,6 +174,11 @@ namespace smt {
             
             // Track if this worker had a lease cancellation to help recognize cancellation exceptions
             std::atomic<bool> m_had_lease_cancel{false};
+
+            // Preemption flag: set by batch manager to interrupt the current cube and force
+            // re-evaluation of which node to work on. CAS-guarded so at most one inc_cancel
+            // is outstanding per preempt cycle, matched by exactly one dec_cancel in check_cancel.
+            std::atomic<bool> m_preempt{false};
             
             expr_ref get_split_atom();
 
@@ -193,6 +199,8 @@ namespace smt {
 
             void cancel();
             void cancel_lease();
+            void preempt();
+            bool acknowledge_preempt();
             void collect_statistics(::statistics& st) const;
 
             reslimit& limit() {
