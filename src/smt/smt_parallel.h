@@ -81,7 +81,6 @@ namespace smt {
             using node = search_tree::node<cube_config>;
             search_tree::tree<cube_config> m_search_tree;
             vector<node_lease> m_worker_leases;
-            vector<node_lease> m_pending_lease_cancels;
             
             unsigned m_exception_code = 0;
             std::string m_exception_msg;
@@ -194,9 +193,6 @@ namespace smt {
 
             void cancel();
             void cancel_lease();
-            void reset_lease_cancel_flag() {
-                m_had_lease_cancel.store(false, std::memory_order_release);
-            }
             void collect_statistics(::statistics& st) const;
 
             reslimit& limit() {

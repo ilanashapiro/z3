@@ -118,6 +118,7 @@ namespace smt {
         node_lease lease;
         expr_ref_vector cube(m);
         while (true) {
+            m_had_lease_cancel.store(false, std::memory_order_relaxed);
 
             if (!b.get_cube(m_g2l, id, cube, is_first_run, lease)) {
                 LOG_WORKER(1, " no more cubes\n");
@@ -357,18 +358,8 @@ namespace smt {
             
             // only cancel workers that currently hold a lease, and whose lease is canceled
             if (lease.node && m_search_tree.is_lease_canceled(lease.node, lease.cancel_epoch)) {
-                if (worker_id >= m_pending_lease_cancels.size())
-                    m_pending_lease_cancels.resize(worker_id + 1);
-                auto const& pending = m_pending_lease_cancels[worker_id];
-                if (pending.node != lease.node ||
-                    pending.epoch != lease.epoch ||
-                    pending.cancel_epoch != lease.cancel_epoch) {
-                    // Signal the worker to cancel its lease (on-demand interruption)
-                    p.m_workers[worker_id]->cancel_lease();
-                    m_pending_lease_cancels[worker_id] = lease;
-                }
-                // Don't retire the lease yet - let the worker acknowledge first
-                // The lease will be retired after the worker acknowledges
+                p.m_workers[worker_id]->cancel_lease();
+                release_lease_unlocked(worker_id, lease.node, lease.epoch);
             }
         }
     }
@@ -439,41 +430,23 @@ namespace smt {
 
     parallel::batch_manager::cancel_action parallel::batch_manager::check_cancel(unsigned worker_id, node_lease &lease, reslimit &limit) {
         std::scoped_lock lock(mux);
-        
-        // First: Handle pending canceled lease (must come before state check)
-        // This ensures we clean up canceled leases even during shutdown
+
         if (m_search_tree.is_lease_canceled(lease.node, lease.cancel_epoch)) {
-            bool found_matching_pending = false;
-            if (worker_id < m_pending_lease_cancels.size()) {
-                auto &pending = m_pending_lease_cancels[worker_id];
-                if (pending.node == lease.node &&
-                    pending.epoch == lease.epoch &&
-                    pending.cancel_epoch == lease.cancel_epoch) {
-                    limit.dec_cancel();
-                    // Retire the lease now that worker is exiting it
-                    release_lease_unlocked(worker_id, lease.node, lease.epoch);
-                    pending = {};
-                    // Reset the lease-cancel flag now that we've acknowledged this specific cancel
-                    if (worker_id < p.m_workers.size()) {
-                        p.m_workers[worker_id]->reset_lease_cancel_flag();
-                    }
-                    found_matching_pending = true;
-                }
-            }
-            // If lease is canceled but no matching pending token, this is suspicious
-            // (suggests potential invariant violation - should be rare)
-            if (!found_matching_pending && worker_id < m_pending_lease_cancels.size()) {
-                IF_VERBOSE(0, verbose_stream() << "Warning: canceled lease without matching pending token for worker " << worker_id << "\n");
-                SASSERT(false && "canceled lease should have matching pending token");
-            }
+            release_lease_unlocked(worker_id, lease.node, lease.epoch);
+            limit.dec_cancel();
             lease = {};
-            // If we're shutting down, we already cleaned up, so return stop_worker
             if (m_state != state::is_running)
+                return cancel_action::stop_worker;
+            // After dec_cancel, check if a real (non-lease) cancel is still in effect.
+            // set_cancel propagates absolute values, so a concurrent external cancel on the
+            // parent reslimit could have set this worker's m_cancel to 1, which dec_cancel
+            // would have zeroed out -- masking the external cancel. Checking the parent
+            // directly closes that window.
+            if (limit.is_canceled() || p.ctx.m.limit().is_canceled())
                 return cancel_action::stop_worker;
             return cancel_action::continue_search;
         }
-        
-        // Then: Check global state
+
         if (m_state != state::is_running)
             return cancel_action::stop_worker;
         if (limit.is_canceled())
@@ -683,8 +656,6 @@ namespace smt {
         m_search_tree.set_effort_unit(initial_max_thread_conflicts);
         m_worker_leases.reset();
         m_worker_leases.resize(p.m_workers.size());
-        m_pending_lease_cancels.reset();
-        m_pending_lease_cancels.resize(p.m_workers.size());
     }
 
     void parallel::batch_manager::collect_statistics(::statistics &st) const {
