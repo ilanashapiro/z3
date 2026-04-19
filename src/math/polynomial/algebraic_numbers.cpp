@@ -26,6 +26,7 @@ Notes:
 #include "math/polynomial/upolynomial.h"
 #include "math/polynomial/sexpr2upolynomial.h"
 #include "math/polynomial/algebraic_params.hpp"
+#include <numeric>
 
 namespace algebraic_numbers {
 
@@ -594,9 +595,26 @@ namespace algebraic_numbers {
         }
 
         void sort_roots(numeral_vector & r) {
-            if (m_limit.inc()) {
-                // DEBUG_CODE(check_transitivity(r););
-                std::sort(r.begin(), r.end(), lt_proc(m_wrapper));
+            if (!m_limit.inc())
+                return;
+
+            unsigned sz = r.size();
+            if (sz <= 1)
+                return;
+
+            // Compare roots through indices so the sort never copies or moves
+            // owning anum handles while the comparator refines them in place.
+            unsigned_vector perm(sz);
+            std::iota(perm.begin(), perm.end(), 0u);
+            std::sort(perm.begin(), perm.end(),
+                      [&](unsigned i, unsigned j) { return lt_proc(m_wrapper)(r[i], r[j]); });
+
+            for (unsigned i = 0; i < sz; ++i) {
+                while (perm[i] != i) {
+                    unsigned j = perm[i];
+                    swap(r[i], r[j]);
+                    std::swap(perm[i], perm[j]);
+                }
             }
         }
 
