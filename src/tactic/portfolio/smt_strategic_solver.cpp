@@ -198,5 +198,3 @@ public:
 solver_factory * mk_smt_strategic_solver_factory(symbol const & logic) {
     return alloc(smt_strategic_solver_factory, logic);
 }
-
-

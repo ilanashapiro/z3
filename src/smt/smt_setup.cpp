@@ -942,5 +942,3 @@ namespace smt {
     }
 
 };
-
-

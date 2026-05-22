@@ -430,4 +430,3 @@ void smt_params::setup_LRA() {
     m_arith_propagate_eqs = false;
     m_eliminate_term_ite  = true;
 }
-
