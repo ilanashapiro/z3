@@ -24,6 +24,11 @@ jobs:
       - name: Build Z3 with Ninja
         run: bash ./build_z3_ubuntu
 
+      - name: Verify linkage
+        run: |
+          file build-smtcomp/z3
+          ldd build-smtcomp/z3 || true
+
       - name: Upload Linux z3 binary
         uses: actions/upload-artifact@v4
         with:

@@ -8,17 +8,36 @@ BUILD_TYPE="${BUILD_TYPE:-Release}"
 CMAKE_BIN="${CMAKE_BIN:-cmake}"
 NINJA_BIN="${NINJA_BIN:-ninja}"
 JOBS="${JOBS:-}"
+STATIC_LINK="${STATIC_LINK:-1}"
 
 echo "Root directory: $ROOT_DIR"
 echo "Build directory: $BUILD_DIR"
 echo "Build type: $BUILD_TYPE"
+echo "Static link request: $STATIC_LINK"
 
 mkdir -p "$BUILD_DIR"
 
-"$CMAKE_BIN" -S "$ROOT_DIR" -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+cmake_args=(
+    -S "$ROOT_DIR"
+    -B "$BUILD_DIR"
+    -G Ninja
+    -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+)
+
+if [[ "$STATIC_LINK" == "1" ]]; then
+    cmake_args+=(
+        -DZ3_BUILD_LIBZ3_SHARED=OFF
+        -DZ3_BUILD_TEST_EXECUTABLES=OFF
+        -DCMAKE_EXE_LINKER_FLAGS=-static\ -static-libstdc++\ -static-libgcc
+    )
+fi
+
+"$CMAKE_BIN" "${cmake_args[@]}"
 
 if [[ -n "$JOBS" ]]; then
     "$NINJA_BIN" -C "$BUILD_DIR" -j "$JOBS"
 else
     "$NINJA_BIN" -C "$BUILD_DIR"
 fi
+
+file "$BUILD_DIR/z3" || true
