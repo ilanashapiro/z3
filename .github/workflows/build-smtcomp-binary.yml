@@ -2,6 +2,9 @@ name: Build SMT-COMP Binary
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - smt_parallel_comp_2026
 
 jobs:
   build-linux:
