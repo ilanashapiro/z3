@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build-smtcomp}"
+BUILD_TYPE="${BUILD_TYPE:-Release}"
+CMAKE_BIN="${CMAKE_BIN:-cmake}"
+NINJA_BIN="${NINJA_BIN:-ninja}"
+JOBS="${JOBS:-}"
+
+echo "Root directory: $ROOT_DIR"
+echo "Build directory: $BUILD_DIR"
+echo "Build type: $BUILD_TYPE"
+
+mkdir -p "$BUILD_DIR"
+
+"$CMAKE_BIN" -S "$ROOT_DIR" -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+
+if [[ -n "$JOBS" ]]; then
+    "$NINJA_BIN" -C "$BUILD_DIR" -j "$JOBS"
+else
+    "$NINJA_BIN" -C "$BUILD_DIR"
+fi
