@@ -1,0 +1,28 @@
+name: Build SMT-COMP Binary
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    container:
+      image: registry.gitlab.com/sosy-lab/benchmarking/competition-scripts/user:latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++ python3
+
+      - name: Build Z3 with Ninja
+        run: bash ./build_z3_ubuntu
+
+      - name: Upload Linux z3 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: z3-linux
+          path: build-smtcomp/z3
