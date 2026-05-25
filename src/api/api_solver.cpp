@@ -146,6 +146,7 @@ extern "C" {
         bool proofs_enabled = true, models_enabled = true, unsat_core_enabled = false;
         params_ref p = s->m_params;
         mk_c(c)->params().get_solver_params(p, proofs_enabled, models_enabled, unsat_core_enabled);
+        enforce_logic_param_overrides(s->m_logic, p);
         if (!s->m_solver_factory)
             s->m_solver_factory = mk_smt_solver_factory();
         s->m_solver = (*(s->m_solver_factory))(mk_c(c)->m(), p, proofs_enabled, models_enabled, unsat_core_enabled, s->m_logic);
@@ -440,9 +441,11 @@ extern "C" {
         if (logic != symbol::null) {
             to_solver(s)->m_logic = logic;
         }
+        params_ref adjusted = params;
+        enforce_logic_param_overrides(to_solver(s)->m_logic, adjusted);
         if (to_solver(s)->m_solver) {
             bool old_model = to_solver(s)->m_params.get_bool("model", true);
-            bool new_model = params.get_bool("model", true);
+            bool new_model = adjusted.get_bool("model", true);
             if (old_model != new_model)
                 to_solver_ref(s)->set_produce_models(new_model);
             param_descrs& r = to_solver(s)->m_param_descrs;
@@ -450,11 +453,11 @@ extern "C" {
               to_solver_ref(s)->collect_param_descrs(r);
               context_params::collect_solver_param_descrs(r);
             }
-            params.validate(r);
-            to_solver_ref(s)->updt_params(params);
+            adjusted.validate(r);
+            to_solver_ref(s)->updt_params(adjusted);
         }
         auto& solver = *to_solver(s);        
-        solver.m_params.append(params);
+        solver.m_params.append(adjusted);
         
         if (solver.m_cmd_context && solver.m_cmd_context->get_proof_cmds())
             solver.m_cmd_context->get_proof_cmds()->updt_params(solver.m_params);

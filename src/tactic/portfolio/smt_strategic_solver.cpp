@@ -52,6 +52,17 @@ Notes:
 
 tactic* mk_tactic_for_logic(ast_manager& m, params_ref const& p, symbol const& logic);
 
+void enforce_logic_param_overrides(symbol const& logic, params_ref& p) {
+    if (logic == "QF_LIA" || logic == "QF_NIA" || logic == "QF_LRA" || logic == "QF_NRA") {
+        p.set_sym("default_tactic", symbol("smt"));
+        p.set_bool("auto_config", false);
+    }
+    else if (logic == "QF_IDL" || logic == "QF_RDL") {
+        p.reset("default_tactic");
+        p.set_bool("auto_config", true);
+    }
+}
+
 
 class smt_nested_solver_factory : public solver_factory {
 public:
@@ -131,24 +142,28 @@ static solver* mk_special_solver_for_logic(ast_manager & m, params_ref const & p
 }
 
 solver* mk_smt2_solver(ast_manager& m, params_ref const& p, symbol const& logic) {
-    sat_params sp(p);
+    params_ref p2 = p;
+    enforce_logic_param_overrides(logic, p2);
+    sat_params sp(p2);
     if (sp.smt())
-        return mk_sat_smt_solver(m, p);
+        return mk_sat_smt_solver(m, p2);
     if (sp.euf())
-        return mk_inc_sat_solver(m, p);
-    return mk_smt_solver(m, p, logic);
+        return mk_inc_sat_solver(m, p2);
+    return mk_smt_solver(m, p2, logic);
 }
 
 static solver* mk_solver_for_logic(ast_manager & m, params_ref const & p, symbol const& logic) {
+    params_ref p2 = p;
+    enforce_logic_param_overrides(logic, p2);
     bv_rewriter rw(m);
-    solver* s = mk_special_solver_for_logic(m, p, logic);
-    tactic_params tp;
+    solver* s = mk_special_solver_for_logic(m, p2, logic);
+    tactic_params tp(p2);
     if (!s && logic == "QF_BV" && rw.hi_div0()) 
-        s = mk_inc_sat_solver(m, p);
+        s = mk_inc_sat_solver(m, p2);
     if (!s && tp.default_tactic() == "sat")
-        s = mk_inc_sat_solver(m, p);
+        s = mk_inc_sat_solver(m, p2);
     if (!s) 
-        s = mk_smt2_solver(m, p, logic);
+        s = mk_smt2_solver(m, p2, logic);
     return s;
 }
 
@@ -164,7 +179,9 @@ public:
         else
             l = logic;
 
-        tactic_params tp;
+        params_ref p2 = p;
+        enforce_logic_param_overrides(l, p2);
+        tactic_params tp(p2);
         tactic_ref t;
         if (tp.default_tactic() != symbol::null &&
             !tp.default_tactic().is_numerical() && 
@@ -172,22 +189,22 @@ public:
             cmd_context ctx(false, &m, l);
             std::istringstream is(tp.default_tactic().str());
             char const* file_name = "";
-            sexpr_ref se = parse_sexpr(ctx, is, p, file_name);
+            sexpr_ref se = parse_sexpr(ctx, is, p2, file_name);
             if (se) {
                 t = sexpr2tactic(ctx, se.get());
             }
         }
 
         if (!t) {
-            solver* s = mk_special_solver_for_logic(m, p, l);
+            solver* s = mk_special_solver_for_logic(m, p2, l);
             if (s) return s;
         }
         if (!t) {
-            t = mk_tactic_for_logic(m, p, l);
+            t = mk_tactic_for_logic(m, p2, l);
         }
-        return mk_combined_solver(mk_tactic2solver(m, t.get(), p, proofs_enabled, models_enabled, unsat_core_enabled, l),
-                                  mk_solver_for_logic(m, p, l), 
-                                  p);
+        return mk_combined_solver(mk_tactic2solver(m, t.get(), p2, proofs_enabled, models_enabled, unsat_core_enabled, l),
+                                  mk_solver_for_logic(m, p2, l), 
+                                  p2);
     }
     
     solver_factory* translate(ast_manager& m) override {

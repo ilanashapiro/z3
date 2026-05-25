@@ -43,6 +43,8 @@ solver_factory * mk_smt_strategic_solver_factory(symbol const & logic = symbol::
 
 solver* mk_smt2_solver(ast_manager& m, params_ref const& p, symbol const& logic = symbol::null);
 
+void enforce_logic_param_overrides(symbol const& logic, params_ref& p);
+
 /**
    \brief Abstract interface for making solvers available in the Z3
    API and front-ends such as SMT 2.0 and (legacy) SMT 1.0.
@@ -328,4 +330,3 @@ typedef ref<solver> solver_ref;
 inline std::ostream& operator<<(std::ostream& out, solver const& s) {
     return s.display(out);
 }
-

@@ -674,6 +674,7 @@ void cmd_context::global_params_updated() {
         params_ref p;
         if (!m_params.m_auto_config)
             p.set_bool("auto_config", false);
+        enforce_logic_param_overrides(m_logic, p);
         m_solver->updt_params(p);
     }
     if (m_opt) {
@@ -2324,6 +2325,7 @@ void cmd_context::mk_solver() {
     bool proofs_enabled = m().proofs_enabled(), models_enabled = true, unsat_core_enabled = true;
     params_ref p;
     m_params.get_solver_params(p, proofs_enabled, models_enabled, unsat_core_enabled);
+    enforce_logic_param_overrides(m_logic, p);
     m_solver = (*m_solver_factory)(m(), p, proofs_enabled, models_enabled, unsat_core_enabled, m_logic);
     m_solver = mk_slice_solver(m_solver.get());
     if (m_simplifier_factory)
@@ -2570,4 +2572,3 @@ std::ostream & operator<<(std::ostream & out, cmd_context::status st) {
     }
     return out;
 }
-
