@@ -52,14 +52,37 @@ Notes:
 
 tactic* mk_tactic_for_logic(ast_manager& m, params_ref const& p, symbol const& logic);
 
+static bool logic_name_contains(std::string const& logic, char const* fragment) {
+    return logic.find(fragment) != std::string::npos;
+}
+
+static bool is_difference_logic(symbol const& logic) {
+    std::string s = logic.str();
+    return logic_name_contains(s, "IDL") || logic_name_contains(s, "RDL");
+}
+
+static bool is_arith_logic(symbol const& logic) {
+    if (is_difference_logic(logic))
+        return false;
+    std::string s = logic.str();
+    return
+        logic_name_contains(s, "LIA") ||
+        logic_name_contains(s, "LRA") ||
+        logic_name_contains(s, "LIRA") ||
+        logic_name_contains(s, "NIA") ||
+        logic_name_contains(s, "NRA") ||
+        logic_name_contains(s, "NIRA");
+}
+
 void enforce_logic_param_overrides(symbol const& logic, params_ref& p) {
-    if (logic == "QF_LIA" || logic == "QF_NIA" || logic == "QF_LRA" || logic == "QF_NRA") {
-        p.set_sym("default_tactic", symbol("smt"));
-        p.set_bool("auto_config", false);
-    }
-    else if (logic == "QF_IDL" || logic == "QF_RDL") {
+    if (is_difference_logic(logic)) {
         p.reset("default_tactic");
         p.set_bool("auto_config", true);
+        p.set_uint("arith.solver", 4);
+    }
+    else if (is_arith_logic(logic)) {
+        p.set_sym("default_tactic", symbol("smt"));
+        p.set_bool("auto_config", false);
     }
 }
 
