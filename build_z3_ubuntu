@@ -39,5 +39,3 @@ if [[ -n "$JOBS" ]]; then
 else
     "$NINJA_BIN" -C "$BUILD_DIR"
 fi
-
-file "$BUILD_DIR/z3" || true

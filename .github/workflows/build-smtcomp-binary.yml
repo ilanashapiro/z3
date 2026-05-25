@@ -19,7 +19,7 @@ jobs:
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y cmake ninja-build g++ python3
+          apt-get install -y cmake file ninja-build g++ python3
 
       - name: Build Z3 with Ninja
         run: bash ./build_z3_ubuntu
