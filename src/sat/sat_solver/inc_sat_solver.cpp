@@ -406,16 +406,14 @@ public:
     }
 
     unsigned get_assign_level(expr* e) const override {
-        expr* atom = e;
-        m.is_not(e, atom);
-        sat::bool_var bv = m_map.to_bool_var(atom);
+        m.is_not(e, e);
+        sat::bool_var bv = m_map.to_bool_var(e);
         return bv == sat::null_bool_var ? UINT_MAX : m_solver.lvl(bv);
     }
 
     bool is_relevant(expr* e) const override {
-        expr* atom = e;
-        m.is_not(e, atom);
-        sat::bool_var bv = m_map.to_bool_var(atom);
+        m.is_not(e, e);
+        sat::bool_var bv = m_map.to_bool_var(e);
         if (bv == sat::null_bool_var)
             return true;
         auto* ext = dynamic_cast<euf::solver*>(m_solver.get_extension());
@@ -426,26 +424,24 @@ public:
         return m_solver.num_vars();
     }
 
-    unsigned get_bool_var(expr* e) const override {
-        expr* atom = e;
-        m.is_not(e, atom);
-        sat::bool_var bv = m_map.to_bool_var(atom);
-        return bv == sat::null_bool_var ? UINT_MAX : bv;
+    sat::bool_var get_bool_var(expr* e) const override {
+        m.is_not(e, e);
+        return m_map.to_bool_var(e);
     }
 
-    expr* bool_var2expr(unsigned v) const override {
+    expr* bool_var2expr(sat::bool_var v) const override {
         return v < m_solver.num_vars() ? m_map.bool_var2expr(v) : nullptr;
     }
 
-    lbool get_assignment(unsigned v) const override {
+    lbool get_assignment(sat::bool_var v) const override {
         return v < m_solver.num_vars() ? m_solver.value(v) : l_undef;
     }
 
-    double get_activity(unsigned v) const override {
+    double get_activity(sat::bool_var v) const override {
         return v < m_solver.num_vars() ? static_cast<double>(m_solver.get_activity(v)) : 0.0;
     }
 
-    bool was_eliminated(unsigned v) const override {
+    bool was_eliminated(sat::bool_var v) const override {
         return v < m_solver.num_vars() && m_solver.was_eliminated(v);
     }
 
@@ -496,30 +492,41 @@ public:
         }
         sat::literal_vector lits;
         expr_ref_vector fmls(m);
-        if (!m_params.get_bool("cube.lookahead", false)) {
-            sat::bool_var best = sat::null_bool_var;
-            double best_activity = 0.0;
-            unsigned n = 0;
+        parallel_params pp(m_params);
+        if (!pp.cube_lookahead()) {
+            sat::bool_var_vector candidates;
+            unsigned search_lvl = m_solver.search_lvl();
             for (sat::bool_var v : vars) {
-                if (get_assignment(v) != l_undef || was_eliminated(v))
+                if (was_eliminated(v))
                     continue;
-                double activity = get_activity(v);
-                if (best == sat::null_bool_var || activity > best_activity || (activity == best_activity && m_solver.rand()(++n) == 0)) {
-                    best = v;
-                    best_activity = activity;
-                }
+                if (get_assignment(v) != l_undef && m_solver.lvl(v) <= search_lvl)
+                    continue;
+                candidates.push_back(v);
             }
-            if (best == sat::null_bool_var)
+            std::sort(candidates.begin(), candidates.end(), [&](sat::bool_var a, sat::bool_var b) {
+                return get_activity(a) > get_activity(b);
+            });
+            // shuffle sub-sequences with equal activity
+            unsigned i = 0;
+            while (i < candidates.size()) {
+                unsigned j = i + 1;
+                double act = get_activity(candidates[i]);
+                while (j < candidates.size() && get_activity(candidates[j]) == act)
+                    ++j;
+                if (j - i > 1)
+                    shuffle(j - i, candidates.data() + i, m_solver.rand());
+                i = j;
+            }
+            if (candidates.empty())
                 return expr_ref_vector(m);
-            expr* e = bool_var2expr(best);
-            SASSERT(e);
-            if (e)
-                fmls.push_back(e);
             vs.reset();
-            for (sat::bool_var v : vars) {
-                expr* x = bool_var2expr(v);
-                if (x)
-                    vs.push_back(x);
+            for (sat::bool_var v : candidates) {
+                expr* e = bool_var2expr(v);
+                if (e) {
+                    if (fmls.size() < backtrack_level)
+                       fmls.push_back(e);
+                    vs.push_back(e);
+                }
             }
             return fmls;
         }

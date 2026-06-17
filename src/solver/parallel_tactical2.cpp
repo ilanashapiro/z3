@@ -106,6 +106,12 @@ static bool is_cancellation_exception(char const* msg) {
     return msg && (strstr(msg, "canceled") != nullptr || strstr(msg, "cancelled") != nullptr);
 }
 
+static void set_max_conflicts(solver_ref& s, unsigned max_conflicts) {
+    params_ref p;
+    p.set_uint("max_conflicts", max_conflicts);
+    s->updt_params(p);
+}
+
 /* ------------------------------------------------------------------ */
 /* parallel_solver – the core portfolio engine                         */
 /* ------------------------------------------------------------------ */
@@ -120,12 +126,6 @@ class parallel_solver {
     /* ---- node lease (mirrors smt_parallel) ---- */
     struct node_lease {
         search_tree::node<solver_cube_config>* leased_node = nullptr;
-
-        // Cancellation generation counter for this node/subtree.
-        // Incremented when the node is closed; used to signal that all
-        // workers holding leases on this node (or its descendants)
-        // must abandon work immediately.
-        unsigned cancel_epoch = 0;
 
         // Guards against multiple inc_cancel() calls for the same lease.
         // Set when cancel_lease() is signaled; cleared when a new lease is assigned.
@@ -212,7 +212,7 @@ class parallel_solver {
         expr_ref_vector m_unsat_core;
 
         // called from batch manager to cancel other workers if we've reached a verdict
-        void cancel_workers_unlocked() {
+        void cancel_background_threads() {
             IF_VERBOSE(1, verbose_stream() << "Canceling workers\n");
             for (auto* w : p.m_workers)
                 w->cancel();
@@ -242,7 +242,7 @@ class parallel_solver {
                 if (id == source_worker_id) continue;
                 auto const& lease = m_worker_leases[id];
                 if (lease.leased_node && !lease.cancel_signaled &&
-                    m_search_tree.is_lease_canceled(lease.leased_node, lease.cancel_epoch)) {
+                    m_search_tree.is_lease_canceled(lease.leased_node)) {
                     p.m_workers[id]->cancel_lease();
                     m_worker_leases[id].cancel_signaled = true;
                 }
@@ -310,7 +310,7 @@ class parallel_solver {
             for (auto* t : matches) {
                 if (!t || t == source)
                     continue;
-                if (m_search_tree.is_lease_canceled(t, t->get_cancel_epoch()))
+                if (m_search_tree.is_lease_canceled(t))
                     continue;
 
                 // When source is provided, keep only external matches. Nodes in the
@@ -337,7 +337,7 @@ class parallel_solver {
                 if (!is_highest_ancestor)
                     continue;
 
-                targets.push_back({ t, t->get_cancel_epoch() });
+                targets.push_back({ t });
             }
         }
 
@@ -399,7 +399,7 @@ class parallel_solver {
             SASSERT(lease != nullptr || targets != nullptr);
             bool did_backtrack = false;
 
-            if (lease && !m_search_tree.is_lease_canceled(lease->leased_node, lease->cancel_epoch)) {
+            if (lease && !m_search_tree.is_lease_canceled(lease->leased_node)) {
                 // we close/backtrack regardless of whether this lease is stale or not, as long as the lease isn't canceled
                 // i.e. worker 1 splits this node, but then worker 2 determines UNSAT --> worker 2 is stale but we still close this node and backtrack
                 did_backtrack = true;
@@ -408,7 +408,7 @@ class parallel_solver {
             }
             if (targets) {
                 for (auto const& target : *targets) {
-                    if (m_search_tree.is_lease_canceled(target.leased_node, target.cancel_epoch))
+                    if (m_search_tree.is_lease_canceled(target.leased_node))
                         continue;
                     did_backtrack = true;
                     m_search_tree.backtrack(target.leased_node, g_core);
@@ -432,7 +432,7 @@ class parallel_solver {
                 SASSERT(m_unsat_core.empty());
                 for (auto& e : m_search_tree.get_core_from_root())
                     m_unsat_core.push_back(e.get());
-                cancel_workers_unlocked();
+                cancel_background_threads();
             }
         }
 
@@ -471,8 +471,22 @@ class parallel_solver {
             if (m_state != state::is_running) return;
             m_state = state::is_sat;
             m_model = mdl.translate(l2g);
-            cancel_workers_unlocked();
+            cancel_background_threads();
         }
+
+        void set_canceled() {
+            std::scoped_lock lock(mux);
+            if (m_state != state::is_running)
+                return;
+            cancel_background_threads();
+        }
+
+        // CODE IS LOCKED WHEN WE ADD THIS FUNCTION -- NEED TO FIX
+        // void notify_cv_waiters() {
+            // std::scoped_lock lock(mux);
+            // m_bb_cv.notify_all();
+            // m_core_min_cv.notify_all();
+        // }
 
         void set_unsat(ast_translation& l2g,
                        expr_ref_vector const& core) {
@@ -483,7 +497,7 @@ class parallel_solver {
             SASSERT(m_unsat_core.empty());
             for (expr* c : core)
                 m_unsat_core.push_back(l2g(c));
-            cancel_workers_unlocked();
+            cancel_background_threads();
         }
 
         void set_exception(std::string const& msg) {
@@ -492,7 +506,7 @@ class parallel_solver {
             if (m_state != state::is_running) return;
             m_state = state::is_exception_msg;
             m_exception_msg = msg;
-            cancel_workers_unlocked();
+            cancel_background_threads();
         }
 
         void set_exception(unsigned error_code) {
@@ -501,7 +515,7 @@ class parallel_solver {
             if (m_state != state::is_running) return;
             m_state = state::is_exception_code;
             m_exception_code = error_code;
-            cancel_workers_unlocked();
+            cancel_background_threads();
         }
 
         bool get_cube(ast_translation& g2l, unsigned id,
@@ -518,7 +532,6 @@ class parallel_solver {
             if (!t) return false;
 
             lease.leased_node  = t;
-            lease.cancel_epoch = t->get_cancel_epoch();
             if (id >= m_worker_leases.size())
                 m_worker_leases.resize(id + 1);
             m_worker_leases[id] = lease;
@@ -585,14 +598,13 @@ class parallel_solver {
 
             unsigned best_idx = select_best_core_min_job_unlocked();
             m_core_min_jobs.swap(best_idx, m_core_min_jobs.size() - 1);
-            core_min_job* job = m_core_min_jobs.detach_back();
+            scoped_ptr<core_min_job> job = m_core_min_jobs.detach_back();
             m_core_min_jobs.pop_back();
             SASSERT(job);
             source = job->source;
             core.reset();
             for (expr* c : job->core)
                 core.push_back(g2l(c));
-            dealloc(job);
             return source != nullptr;
         }
 
@@ -626,7 +638,7 @@ class parallel_solver {
                     m_unsat_core.push_back(l2g(e));
                 ++m_stats.m_core_min_jobs_published;
                 ++m_stats.m_core_min_global_unsat;
-                cancel_workers_unlocked();
+                cancel_background_threads();
                 return;
             }
 
@@ -639,7 +651,7 @@ class parallel_solver {
             if (!g_core.empty()) {
                 collect_matching_targets_unlocked(source, g_core[0].get(), g_core, targets);
                 for (auto const& target : targets) {
-                    if (!m_search_tree.is_lease_canceled(target.leased_node, target.cancel_epoch))
+                    if (!m_search_tree.is_lease_canceled(target.leased_node))
                         m_search_tree.backtrack(target.leased_node, g_core);
                 }
             }
@@ -660,8 +672,21 @@ class parallel_solver {
                 SASSERT(m_unsat_core.empty());
                 for (auto& e : m_search_tree.get_core_from_root())
                     m_unsat_core.push_back(e.get());
-                cancel_workers_unlocked();
+                cancel_background_threads();
             }
+        }
+
+        bool path_contains_atom(ast_translation& l2g, node_lease const& lease, expr* atom) {
+            std::scoped_lock lock(mux);
+            if (!lease.leased_node)
+                return false;
+            if (m_state != state::is_running)
+                return false;
+            if (m_search_tree.is_lease_canceled(lease.leased_node))
+                return false;
+
+            expr_ref _atom(l2g(atom), m);            
+            return lease.leased_node->path_contains_atom(_atom);
         }
 
         void try_split(ast_translation& l2g, unsigned worker_id,
@@ -669,8 +694,7 @@ class parallel_solver {
                        expr* atom, unsigned effort) {
             std::scoped_lock lock(mux);
             if (m_state != state::is_running) return;
-            if (m_search_tree.is_lease_canceled(
-                    lease.leased_node, lease.cancel_epoch)) return;
+            if (m_search_tree.is_lease_canceled(lease.leased_node)) return;
 
             expr_ref lit(m), nlit(m);
             lit  = l2g(atom);
@@ -679,8 +703,7 @@ class parallel_solver {
             VERIFY(!lease.leased_node->path_contains_atom(nlit));
 
             bool did_split = m_search_tree.try_split(
-                lease.leased_node, lease.cancel_epoch,
-                lit, nlit, effort);
+                lease.leased_node, lit, nlit, effort);
 
             release_lease_unlocked(worker_id, lease.leased_node);
 
@@ -698,11 +721,22 @@ class parallel_solver {
             release_lease_unlocked(worker_id, lease.leased_node);
         }
 
-        bool lease_canceled(node_lease const& lease) {
+        bool release_canceled_lease(unsigned worker_id, node_lease const& lease, bool& cancel_signaled) {
             std::scoped_lock lock(mux);
-            return m_state == state::is_running &&
-                   m_search_tree.is_lease_canceled(
-                       lease.leased_node, lease.cancel_epoch);
+            cancel_signaled = false;
+            if (m_state != state::is_running || !lease.leased_node || worker_id >= m_worker_leases.size())
+                return false;
+
+            auto& stored = m_worker_leases[worker_id];
+            if (stored.leased_node != lease.leased_node)
+                return false;
+
+            if (!m_search_tree.is_lease_canceled(stored.leased_node))
+                return false;
+
+            cancel_signaled = stored.cancel_signaled;
+            release_lease_unlocked(worker_id, stored.leased_node);
+            return true;
         }
 
         void collect_clause(ast_translation& l2g,
@@ -835,7 +869,7 @@ class parallel_solver {
 
             if (changed && !m_bb_candidates.empty()) {
                 m_bb_candidate_epoch.fetch_add(1, std::memory_order_release);
-                std::sort(
+                std::stable_sort(
                     m_bb_candidates.begin(),
                     m_bb_candidates.end(),
                     [&](bb_candidate const& a, bb_candidate const& b) {
@@ -859,7 +893,7 @@ class parallel_solver {
             if (lim.is_canceled() || m_state != state::is_running)
                 return false;
 
-                if (m_bb_last_batch_processed[bb_thread_id] == m_bb_batch_id) {
+            if (m_bb_last_batch_processed[bb_thread_id] == m_bb_batch_id) {
                 unsigned n = std::min<unsigned>(m_bb_batch_size, m_bb_candidates.size());
                 m_bb_current_batch.reset();
                 for (unsigned i = 0; i < n; ++i) {
@@ -902,9 +936,9 @@ class parallel_solver {
         expr_ref_vector const& get_unsat_core() const { return m_unsat_core; }
 
         void collect_statistics(statistics& st) const {
-            st.update("parallel-num_cubes", m_stats.m_num_cubes);
+            st.update("parallel-num-cubes", m_stats.m_num_cubes);
             st.update("parallel-max-cube-size", m_stats.m_max_cube_depth);
-            st.update("bb-backbones-found", m_stats.m_backbones_found);
+            st.update("parallel-backbones-found", m_stats.m_backbones_found);
             st.update("parallel-core-min-jobs-enqueued", m_stats.m_core_min_jobs_enqueued);
             st.update("parallel-core-min-jobs-published", m_stats.m_core_min_jobs_published);
             st.update("parallel-core-min-jobs-skipped", m_stats.m_core_min_jobs_skipped);
@@ -929,6 +963,7 @@ class parallel_solver {
                 bool     m_share_units_initial_only = true;
                 bool     m_core_minimize         = false;
                 bool     m_global_backbones      = false;
+                bool     m_ablate_backtracking   = false;
                 unsigned m_max_cube_depth        = 20;
         };
 
@@ -950,7 +985,7 @@ class parallel_solver {
         }
 
         lbool check_cube(expr_ref_vector const& cube) {
-            s->set_max_conflicts(std::min(m_config.m_threads_max_conflicts, m_config.m_max_conflicts));
+            set_max_conflicts(s, std::min(m_config.m_threads_max_conflicts, m_config.m_max_conflicts));
 
             expr_ref_vector combined(m);
             combined.append(asms);
@@ -972,6 +1007,10 @@ class parallel_solver {
             catch (z3_exception& ex) {
                 if (!m.limit().is_canceled() && !is_cancellation_exception(ex.what()))
                     b.set_exception(ex.what());
+            } 
+            catch (...) {
+                IF_VERBOSE(0, verbose_stream() << "Unknown exception in check_cube\n";);
+                throw;
             }
             LOG_WORKER(1, " DONE checking cube " << r << "\n";);
             return r;
@@ -1027,28 +1066,37 @@ class parallel_solver {
             m_shared_units_prefix = prefix_sz;
         }
 
-        expr_ref get_split_atom(expr_ref_vector const& cube) {
+        expr_ref get_split_atom(node_lease const& lease, expr_ref_vector const& cube) {
             if (cube.size() >= m_config.m_max_cube_depth)
                 return expr_ref(nullptr, m);
 
             expr_ref_vector vars(m);
             obj_hashtable<expr> rejected_atoms;
             while (true) {
-                expr_ref_vector cands = s->cube(vars, 1);
                 bool rejected = false;
-                for (expr* lit : cands) {
-                    if (!lit)
-                        continue;
-                    if (m.is_true(lit) || m.is_false(lit))
-                        continue;
-                    if (m_config.m_global_backbones && b.is_global_backbone_or_negation(m_l2g, lit)) {
-                        expr* atom = lit;
-                        m.is_not(lit, atom);
-                        rejected_atoms.insert(atom);
-                        rejected = true;
-                        continue;
+                try {
+                    expr_ref_vector cands = s->cube(vars, 10);
+                    for (expr *lit : cands) {
+                        if (!lit)
+                            continue;
+                        if (m.is_true(lit) || m.is_false(lit))
+                            continue;
+                        if (b.path_contains_atom(m_l2g, lease, lit))
+                            continue;
+                        if (m_config.m_global_backbones && b.is_global_backbone_or_negation(m_l2g, lit)) {
+                            expr *atom = lit;
+                            m.is_not(lit, atom);
+                            rejected_atoms.insert(atom);
+                            rejected = true;
+                            continue;
+                        }
+                        return expr_ref(lit, m);
                     }
-                    return expr_ref(lit, m);
+                }
+                catch (...) {
+                    if (!m.inc())
+                        return expr_ref(nullptr, m);
+                    throw;
                 }
 
                 if (!rejected || vars.empty())
@@ -1071,8 +1119,13 @@ class parallel_solver {
         bb_candidates find_backbone_candidates(expr_ref_vector const& cube, unsigned k = 10) {
             bb_candidates result;
             vector<solver::scored_literal> cands;
-            s->get_backbone_candidates(cands, s->get_num_bool_vars());
-
+            try {
+                s->get_backbone_candidates(cands, s->get_num_bool_vars());
+            } catch (z3_exception &ex) {
+                if (!m.inc())
+                    return result;
+                throw;
+            }
             for (auto const& cand : cands) {
                 expr* lit = cand.lit.get();
                 if (m_config.m_global_backbones &&
@@ -1091,7 +1144,10 @@ class parallel_solver {
             : id(id), b(p.m_batch_manager), asms(m), m_g2l(src.get_manager(), m), m_l2g(m, src.get_manager()) {
             parallel_params pp(params);
             m_config.m_core_minimize = pp.core_minimize();
+            m_config.m_ablate_backtracking = pp.ablate_backtracking();
             m_config.m_global_backbones = pp.num_bb_threads() > 0;
+            if (m_config.m_ablate_backtracking)
+                m_config.m_core_minimize = false;
 
             s = src.translate(m, params);
             // don't share initial units
@@ -1124,19 +1180,26 @@ class parallel_solver {
                 if (m_config.m_global_backbones) {
                     bb_candidates local_candidates = find_backbone_candidates(cube);
                     b.collect_backbone_candidates(m_l2g, local_candidates);
-                    if (!m.inc())
-                        return;
                 }
                 lbool r = check_cube(cube);
 
-                if (b.lease_canceled(lease)) {
+                bool cancel_signaled = false;
+                if (b.release_canceled_lease(id, lease, cancel_signaled)) {
                     LOG_WORKER(1, " abandoning canceled lease\n");
                     lease = {};
-                    m.limit().dec_cancel();
+                    if (cancel_signaled)
+                        m.limit().dec_cancel();
                     continue;
                 }
 
-                if (!m.inc()) return;
+                // NSB - at this point it shouldn't be possible to call inc_cancel.
+                // Is this ensured? I am not sure.
+                if (!m.inc()) {
+                    b.set_canceled();
+                    // b.notify_cv_waiters();
+                    return;
+                }
+
 
                 switch (r) {
 
@@ -1145,7 +1208,7 @@ class parallel_solver {
                     LOG_WORKER(1, " found undef cube\n");
                     if (m_config.m_max_cube_depth <= cube.size())
                         goto check_cube_start;
-                    expr_ref atom = get_split_atom(cube);
+                    expr_ref atom = get_split_atom(lease, cube);
                     if (atom) {
                         b.try_split(m_l2g, id, lease, atom.get(),
                                     m_config.m_threads_max_conflicts);
@@ -1180,7 +1243,8 @@ class parallel_solver {
 
                     LOG_WORKER(1, " found unsat cube\n");
                     auto* source = lease.leased_node;
-                    b.backtrack(m_l2g, id, unsat_core, lease);
+                    expr_ref_vector const& core_to_use = m_config.m_ablate_backtracking ? cube : unsat_core;
+                    b.backtrack(m_l2g, id, core_to_use, lease);
 
                     if (m_config.m_core_minimize)
                         b.enqueue_core_minimization(m_l2g, source, unsat_core);
@@ -1341,16 +1405,16 @@ class parallel_solver {
                         else
                             ++m_stats.m_fallback_singleton_checks;
 
-                        unsigned old_max_conflicts = s->get_max_conflicts();
-                        s->set_max_conflicts(10);
+                        unsigned old_max_conflicts = s->get_params().get_uint("max_conflicts", UINT_MAX);
+                        set_max_conflicts(s, 10);
 
                         for (expr* lit : chunk_lits) {
                             if (is_retry && b.has_new_backbone_candidates(bb_candidate_epoch)) {
-                                s->set_max_conflicts(old_max_conflicts);
+                                set_max_conflicts(s, old_max_conflicts);
                                 return;
                             }
                             if (!m.inc() || canceled()) {
-                                s->set_max_conflicts(old_max_conflicts);
+                                set_max_conflicts(s, old_max_conflicts);
                                 return;
                             }
                             if (!bb_candidate_lits.contains(lit))
@@ -1378,7 +1442,7 @@ class parallel_solver {
                                         lbool terminal_result = probe_literal(mk_not(m, bb_ref), is_retry);
                                         LOG_BB_WORKER(1, " RESULT: " << terminal_result << " FOR CANDIDATE: " << mk_bounded_pp(bb_ref.get(), m, 3) << "\n");
                                         if (terminal_result != l_undef) {
-                                            s->set_max_conflicts(old_max_conflicts);
+                                            set_max_conflicts(s,old_max_conflicts);
                                             return;
                                         }
                                     }
@@ -1387,7 +1451,7 @@ class parallel_solver {
                             bb_candidate_lits.erase(lit);
                         }
 
-                        s->set_max_conflicts(old_max_conflicts);
+                        set_max_conflicts(s, old_max_conflicts);
                     };
 
                 ++m_stats.m_batches_total;
@@ -1449,8 +1513,11 @@ class parallel_solver {
                     collect_shared_clauses();
 
                     while (true) {
-                        if (!m.inc())
+                        if (!m.inc()) {
+                            b.set_canceled();
+                            // b.notify_cv_waiters();
                             return;
+                        }
                         if (canceled())
                             break;
 
@@ -1459,7 +1526,7 @@ class parallel_solver {
                         for (expr* a : bb_asms)
                             asms.push_back(a);
 
-                        s->set_max_conflicts(m_bb_conflicts_per_chunk);
+                        set_max_conflicts(s,m_bb_conflicts_per_chunk);
                         lbool r = l_undef;
                         try {
                             r = s->check_sat(asms);
@@ -1584,7 +1651,7 @@ class parallel_solver {
             : id(id), b(p.m_batch_manager),
               asms(m), m_g2l(src.get_manager(), m), m_l2g(m, src.get_manager()) {
             s = src.translate(m, params);
-            s->set_max_conflicts(m_bb_conflicts_per_chunk);
+            set_max_conflicts(s, m_bb_conflicts_per_chunk);
             s->pop_to_base_level();
             for (expr* a : src_asms)
                 asms.push_back(m_g2l(a));
@@ -1602,31 +1669,31 @@ class parallel_solver {
         }
 
         void collect_statistics(statistics& st) const {
-            st.update("bb-batches-total", m_stats.m_batches_total);
-            st.update("bb-candidates-total", m_stats.m_candidates_total);
-            st.update("bb-backbones-detected", m_stats.m_backbones_detected);
-            st.update("bb-internal-backbones-found", m_stats.m_internal_backbones_found);
-            st.update("bb-retry-backbones-found", m_stats.m_retry_backbones_found);
-            st.update("bb-retries", m_stats.m_bb_retries);
-            st.update("bb-core-refinement-rounds", m_stats.m_core_refinement_rounds);
-            st.update("bb-singleton-backbones", m_stats.m_singleton_backbones);
-            st.update("bb-fallback-singleton-checks", m_stats.m_fallback_singleton_checks);
-            st.update("bb-fallback-chunk-exhausted", m_stats.m_fallback_reason_chunk_exhausted);
-            st.update("bb-fallback-undef", m_stats.m_fallback_reason_undef);
-            st.update("bb-literals-removed-by-core", m_stats.m_lits_removed_by_core);
-            st.update("bb-num-chunk-increases", m_stats.m_num_chunk_increases);
+            st.update("parallel-bb-batches-total", m_stats.m_batches_total);
+            st.update("parallel-bb-candidates-total", m_stats.m_candidates_total);
+            st.update("parallel-bb-backbones-detected", m_stats.m_backbones_detected);
+            st.update("parallel-bb-internal-backbones-found", m_stats.m_internal_backbones_found);
+            st.update("parallel-bb-retry-backbones-found", m_stats.m_retry_backbones_found);
+            st.update("parallel-bb-retries", m_stats.m_bb_retries);
+            st.update("parallel-bb-core-refinement-rounds", m_stats.m_core_refinement_rounds);
+            st.update("parallel-bb-singleton-backbones", m_stats.m_singleton_backbones);
+            st.update("parallel-bb-fallback-singleton-checks", m_stats.m_fallback_singleton_checks);
+            st.update("parallel-bb-fallback-chunk-exhausted", m_stats.m_fallback_reason_chunk_exhausted);
+            st.update("parallel-bb-fallback-undef", m_stats.m_fallback_reason_undef);
+            st.update("parallel-bb-literals-removed-by-core", m_stats.m_lits_removed_by_core);
+            st.update("parallel-bb-num-chunk-increases", m_stats.m_num_chunk_increases);
 
             auto safe_ratio = [](double num, double den) -> double {
                 return den > 0 ? num / den : 0.0;
             };
 
-            st.update("bb-backbone-yield-pct",
+            st.update("parallel-bb-backbone-yield-pct",
                 100.0 * safe_ratio(m_stats.m_internal_backbones_found, m_stats.m_candidates_total));
-            st.update("bb-avg-backbones-per-batch",
+            st.update("parallel-bb-avg-backbones-per-batch",
                 safe_ratio(m_stats.m_internal_backbones_found, m_stats.m_batches_total));
-            st.update("bb-core-refinement-rounds-per-batch",
+            st.update("parallel-bb-core-refinement-rounds-per-batch",
                 safe_ratio(m_stats.m_core_refinement_rounds, m_stats.m_batches_total));
-            st.update("bb-core-effectiveness-lit-removed-per-round",
+            st.update("parallel-bb-core-effectiveness-lit-removed-per-round",
                 safe_ratio(m_stats.m_lits_removed_by_core, m_stats.m_core_refinement_rounds));
         }
 
@@ -1680,7 +1747,7 @@ class parallel_solver {
 
                 lbool r = l_undef;
                 try {
-                    s->set_max_conflicts(m_core_minimize_conflict_budget);
+                    set_max_conflicts(s, m_core_minimize_conflict_budget);
                     r = s->check_sat(trial);
                 }
                 catch (z3_error&) {
@@ -1775,6 +1842,8 @@ class parallel_solver {
                 if (minimized.size() < original_size)
                     b.publish_minimized_core(m_l2g, asms, source, original_size, minimized);
             }
+            b.set_canceled();
+            // b.notify_cv_waiters();
         }
 
         void cancel() {
@@ -1883,7 +1952,7 @@ public:
 
         /* Launch threads. */
         vector<std::thread> threads;
-        for (auto* w : m_workers)
+        for (auto *w : m_workers)
             threads.push_back(std::thread([w]() { w->run(); }));
         if (m_core_minimizer_worker)
             threads.push_back(std::thread([this]() { m_core_minimizer_worker->run(); }));
@@ -1893,28 +1962,28 @@ public:
         for (auto& t : threads)
             t.join();
 
-        m_solver->reset_parallel_statistics();
+        m_solver->reset_statistics();
         statistics aux;
         for (auto* w : m_workers) {
             aux.reset();
             w->collect_statistics(aux);
-            m_solver->add_parallel_statistics(aux);
+            m_solver->add_statistics(aux);
         }
         aux.reset();
         m_batch_manager.collect_statistics(aux);
-        m_solver->add_parallel_statistics(aux);
+        m_solver->add_statistics(aux);
         if (m_core_minimizer_worker) {
             aux.reset();
             m_core_minimizer_worker->collect_statistics(aux);
-            m_solver->add_parallel_statistics(aux);
+            m_solver->add_statistics(aux);
         }
         for (auto* w : m_global_backbones_workers) {
             aux.reset();
             w->collect_statistics(aux);
-            m_solver->add_parallel_statistics(aux);
+            m_solver->add_statistics(aux);
         }
         m_stats.reset();
-        m_solver->collect_parallel_statistics(m_stats);
+        m_solver->collect_statistics(m_stats);
 
         m_manager.limit().reset_cancel();
 

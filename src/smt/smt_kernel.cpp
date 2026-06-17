@@ -288,15 +288,11 @@ namespace smt {
         m_imp->m_kernel.get_fparams().m_preprocess = f;
     }
 
-    void kernel::reset_aux_statistics() {
-        m_imp->m_kernel.m_aux_stats.reset();
-    }
-
-    void kernel::add_aux_statistics(::statistics const& st) {
-        m_imp->m_kernel.m_aux_stats.copy(st);
-    }
-
     context & kernel::get_context() {
+        return m_imp->m_kernel;
+    }
+
+    context const& kernel::get_context() const {
         return m_imp->m_kernel;
     }
 

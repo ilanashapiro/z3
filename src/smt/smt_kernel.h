@@ -304,10 +304,6 @@ namespace smt {
 
         void set_preprocess(bool f);
 
-        void reset_aux_statistics();
-
-        void add_aux_statistics(::statistics const& st);
-
         void register_on_clause(void* ctx, user_propagator::on_clause_eh_t& on_clause);
 
         /**
@@ -348,6 +344,6 @@ namespace smt {
            \warning This method should not be used in new code.
         */
         context & get_context();
+        context const& get_context() const;
     };
 };
-

@@ -511,6 +511,7 @@ namespace sls {
             case OP_RE_CONCAT:
             case OP_RE_UNION:
             case OP_RE_DIFF:
+            case OP_RE_XOR:
             case OP_RE_INTERSECT:
             case OP_RE_LOOP:
             case OP_RE_POWER:
@@ -912,7 +913,7 @@ namespace sls {
                         m_string_updates.reset();
                         u[i][j] = d[i - 1][j];
                     }
-                    if (d[i][j - 1] < u[i][j] && b.can_add(i - 1)) {
+                    if (d[i][j - 1] < u[i][j] && b.can_add(j - 1)) {
                         m_string_updates.reset();
                         u[i][j] = d[i][j - 1];
                     }
@@ -1294,6 +1295,7 @@ namespace sls {
         case OP_RE_CONCAT:
         case OP_RE_UNION:
         case OP_RE_DIFF:
+        case OP_RE_XOR:
         case OP_RE_INTERSECT:
         case OP_RE_LOOP:
         case OP_RE_POWER:

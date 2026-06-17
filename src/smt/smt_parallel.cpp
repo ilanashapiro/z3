@@ -25,7 +25,7 @@ Author:
 #include "smt/smt_parallel.h"
 #include "smt/smt_lookahead.h"
 #include "solver/solver_preprocess.h"
-#include "params/smt_parallel_params.hpp"
+#include "solver/parallel_params.hpp"
 
 #include <cmath>
 #include <mutex>
@@ -78,8 +78,11 @@ namespace smt {
 
         lbool res = l_undef;
         try {
-            if (!m.inc())
+            if (!m.inc()) {
+                b.set_canceled();
+                // b.notify_cv_waiters;
                 return;
+            }
             res = m_sls->check();
         } catch (z3_exception &ex) {
             // Cancellation is normal in portfolio mode
@@ -180,8 +183,9 @@ namespace smt {
                 for (expr* lit : bb_candidate_lits) {
                     if (is_retry && b.has_new_backbone_candidates(bb_candidate_epoch))
                         break;
-                    if (!m.inc() || canceled())
+                    if (!m.inc() || canceled()) 
                         break;
+                    
 
                     expr* atom = lit;
                     m.is_not(lit, atom);
@@ -218,11 +222,14 @@ namespace smt {
             }
 
             if (!m.inc())
-                return;
+                break;
             if (!canceled())
                 b.cancel_current_backbone_batch();
             bb_candidates.reset();
         }
+        if (!m.inc())
+            b.set_canceled();
+            // b.notify_cv_waiters;
     }
 
     lbool parallel::backbones_worker::probe_literal(bool_var v, expr *e, bool is_retry) {
@@ -390,8 +397,11 @@ namespace smt {
 
                 while (true) {
 
-                    if (!m.inc()) 
+                    if (!m.inc()) {
+                        b.set_canceled();
+                        // b.notify_cv_waiters;
                         return;
+                    }
                     if (canceled()) 
                         break;
 
@@ -515,6 +525,9 @@ namespace smt {
 
             bb_curr_batch_candidates.reset();
         }
+        if (!m.inc())
+            b.set_canceled();
+        //     b.notify_cv_waiters;
     }
 
     void parallel::backbones_worker::cancel() {
@@ -550,7 +563,7 @@ namespace smt {
             if (m_ablate_backtracking) {
                 // Ablation: for each target, pass the entire path from root to that node
                 for (auto const& target : targets) {
-                    if (m_search_tree.is_lease_canceled(target.leased_node, target.cancel_epoch))
+                    if (m_search_tree.is_lease_canceled(target.leased_node))
                         continue;
                     
                     // Reconstruct the full path from root to this target node
@@ -742,6 +755,8 @@ namespace smt {
             if (minimized.size() < original_size)
                 b.publish_minimized_core(m_l2g, asms, source, original_size, minimized);
         }
+        b.set_canceled();
+        // b.notify_cv_waiters;
     }
 
     void parallel::worker::run() {
@@ -763,21 +778,29 @@ namespace smt {
             if (m_config.m_global_backbones) {
                 bb_candidates local_candidates = find_backbone_candidates();
                 b.collect_backbone_candidates(m_l2g, local_candidates);
-                if (!m.inc())
-                    return;
+                if (!m.inc()) {
+                    b.set_canceled();
+                    // b.notify_cv_waiters;
+                    break;
+                }
             }
 
             lbool r = check_cube(cube);
 
-            if (b.lease_canceled(lease)) {
+            bool cancel_signaled = false;
+            if (b.release_canceled_lease(id, lease, cancel_signaled)) {
                 LOG_WORKER(1, " abandoning canceled lease\n");
                 lease = {};
-                m.limit().dec_cancel();
+                if (cancel_signaled)
+                    m.limit().dec_cancel();
                 continue;
             }
 
-             if (!m.inc())
-                return;
+             if (!m.inc()) {
+                b.set_canceled();
+                // b.notify_cv_waiters;
+                break;
+             }
 
             switch (r) {
             case l_undef: {
@@ -836,6 +859,11 @@ namespace smt {
             if (m_config.m_share_units)
                 share_units();
         }
+        if (!m.inc()) {
+            b.set_canceled();
+            // b.notify_cv_waiters;
+            return;
+        }
     }
 
     parallel::worker::worker(unsigned id, parallel &p, expr_ref_vector const &_asms)
@@ -854,10 +882,10 @@ namespace smt {
         m_num_initial_atoms = ctx->get_num_bool_vars();
         ctx->get_fparams().m_preprocess = false;  // avoid preprocessing lemmas that are exchanged
 
-        smt_parallel_params pp(p.ctx.m_params);
-        m_config.m_inprocessing = pp.inprocessing();
-        m_config.m_global_backbones = pp.num_global_bb_batch_threads() > 0 || pp.num_global_bb_fl_threads() > 0;
-        m_config.m_local_backbones = pp.local_backbones();
+        parallel_params pp(p.ctx.get_params());
+        m_config.m_inprocessing = false;
+        m_config.m_global_backbones = pp.num_bb_threads() > 0;
+        m_config.m_local_backbones = false;
         m_config.m_core_minimize = pp.core_minimize();
         m_config.m_ablate_backtracking = pp.ablate_backtracking();
         
@@ -888,9 +916,7 @@ namespace smt {
         m_shared_units_prefix = ctx->assigned_literals().size();
         m_num_initial_atoms = ctx->get_num_bool_vars();
         ctx->get_fparams().m_preprocess = false;  // avoid preprocessing lemmas that are exchanged
-
-        smt_parallel_params pp(p.ctx.m_params);
-        m_use_failed_literal_test = pp.num_global_bb_fl_threads() > 0;
+        m_use_failed_literal_test = false; // true failed literal mode, false for Janota chunking algorithm
     }
 
     parallel::bb_candidates parallel::worker::find_backbone_candidates(unsigned k) {
@@ -1125,7 +1151,7 @@ namespace smt {
             
             // only cancel workers that currently hold a lease, whose lease is canceled,
             // and haven't already been signaled (prevents multiple inc_cancel() for same lease)
-            if (lease.leased_node && !lease.cancel_signaled && m_search_tree.is_lease_canceled(lease.leased_node, lease.cancel_epoch)) {
+            if (lease.leased_node && !lease.cancel_signaled && m_search_tree.is_lease_canceled(lease.leased_node)) {
                 p.m_workers[worker_id]->cancel_lease();
                 m_worker_leases[worker_id].cancel_signaled = true;
             }
@@ -1180,14 +1206,13 @@ namespace smt {
 
         unsigned best_idx = select_best_core_min_job_unlocked();
         m_core_min_jobs.swap(best_idx, m_core_min_jobs.size() - 1);
-        core_min_job* job = m_core_min_jobs.detach_back();
+        scoped_ptr<core_min_job> job = m_core_min_jobs.detach_back();
         m_core_min_jobs.pop_back();
         SASSERT(job);
         source = job->source;
         core.reset();
         for (expr* c : job->core)
             core.push_back(g2l(c));
-        dealloc(job);
         return source != nullptr;
     }
 
@@ -1278,7 +1303,7 @@ namespace smt {
         if (!g_core.empty()) {
             collect_matching_targets_unlocked(source, g_core[0].get(), g_core, targets);
             for (auto const& target : targets) {
-                if (!m_search_tree.is_lease_canceled(target.leased_node, target.cancel_epoch))
+                if (!m_search_tree.is_lease_canceled(target.leased_node))
                     m_search_tree.backtrack(target.leased_node, g_core);
             }
         }
@@ -1332,7 +1357,7 @@ namespace smt {
         for (node* t : matches) {
             if (!t || t == source)
                 continue;
-            if (m_search_tree.is_lease_canceled(t, t->get_cancel_epoch()))
+            if (m_search_tree.is_lease_canceled(t))
                 continue;
 
             // When source is provided, keep only external matches. Nodes in the
@@ -1359,7 +1384,7 @@ namespace smt {
             if (!is_highest_ancestor)
                 continue;
 
-            targets.push_back({ t, t->get_cancel_epoch() });
+            targets.push_back({ t });
         }
     }
 
@@ -1375,7 +1400,7 @@ namespace smt {
         SASSERT(lease != nullptr || targets != nullptr);
         bool did_backtrack = false;
 
-        if (lease && !m_search_tree.is_lease_canceled(lease->leased_node, lease->cancel_epoch)) {
+        if (lease && !m_search_tree.is_lease_canceled(lease->leased_node)) {
             // we close/backtrack regardless of whether this lease is stale or not, as long as the lease isn't canceled
             // i.e. worker 1 splits this node, but then worker 2 determines UNSAT --> worker 2 is stale but we still close this node and backtrack
             did_backtrack = true;
@@ -1385,7 +1410,7 @@ namespace smt {
         }
         if (targets) {
             for (auto const& target : *targets) {
-                if (m_search_tree.is_lease_canceled(target.leased_node, target.cancel_epoch))
+                if (m_search_tree.is_lease_canceled(target.leased_node))
                     continue;
 
                 did_backtrack = true;
@@ -1417,13 +1442,13 @@ namespace smt {
         if (m_state != state::is_running)
             return;
 
-        if (m_search_tree.is_lease_canceled(lease.leased_node, lease.cancel_epoch))
+        if (m_search_tree.is_lease_canceled(lease.leased_node))
             return;
 
         expr_ref lit(m), nlit(m);
         lit = l2g(atom);
         nlit = mk_not(m, lit);
-        bool did_split = m_search_tree.try_split(lease.leased_node, lease.cancel_epoch, lit, nlit, effort);
+        bool did_split = m_search_tree.try_split(lease.leased_node, lit, nlit, effort);
 
         release_lease_unlocked(worker_id, lease.leased_node);
 
@@ -1439,9 +1464,22 @@ namespace smt {
         release_lease_unlocked(worker_id, lease.leased_node);
     }
 
-    bool parallel::batch_manager::lease_canceled(node_lease const &lease) {
+    bool parallel::batch_manager::release_canceled_lease(unsigned worker_id, node_lease const &lease, bool& cancel_signaled) {
         std::scoped_lock lock(mux);
-        return m_state == state::is_running && m_search_tree.is_lease_canceled(lease.leased_node, lease.cancel_epoch);
+        cancel_signaled = false;
+        if (m_state != state::is_running || !lease.leased_node || worker_id >= m_worker_leases.size())
+            return false;
+
+        auto& stored = m_worker_leases[worker_id];
+        if (stored.leased_node != lease.leased_node)
+            return false;
+
+        if (!m_search_tree.is_lease_canceled(stored.leased_node))
+            return false;
+
+        cancel_signaled = stored.cancel_signaled;
+        release_lease_unlocked(worker_id, stored.leased_node);
+        return true;
     }
 
     void parallel::batch_manager::collect_clause(ast_translation &l2g, unsigned source_worker_id, expr *clause) {
@@ -1684,6 +1722,19 @@ namespace smt {
         cancel_background_threads();
     }
 
+    void parallel::batch_manager::set_canceled() {
+        std::scoped_lock lock(mux);
+        if (m_state != state::is_running)
+            return;
+        cancel_background_threads();
+    }
+
+    // void parallel::batch_manager::notify_cv_waiters {
+    //     std::scoped_lock lock(mux);
+    //     m_bb_cv.notify_all();
+    //     m_core_min_cv.notify_all();
+    // }
+
     void parallel::batch_manager::set_exception(unsigned error_code) {
         std::scoped_lock lock(mux);
         IF_VERBOSE(1, verbose_stream() << "Batch manager setting exception code: " << error_code << ".\n");
@@ -1746,7 +1797,6 @@ namespace smt {
         IF_VERBOSE(2, m_search_tree.display(verbose_stream()); verbose_stream() << "\n";);
         
         lease.leased_node = t;
-        lease.cancel_epoch = t->get_cancel_epoch();
         if (id >= m_worker_leases.size())
             m_worker_leases.resize(id + 1);
         m_worker_leases[id] = lease;
@@ -1780,7 +1830,7 @@ namespace smt {
         m_worker_leases.reset();
         m_worker_leases.resize(p.m_workers.size());
         
-        smt_parallel_params pp(p.ctx.m_params);
+        parallel_params pp(p.ctx.get_params());
         m_ablate_backtracking = pp.ablate_backtracking();
     }
 
@@ -1795,18 +1845,18 @@ namespace smt {
     }
 
     lbool parallel::operator()(expr_ref_vector const &asms) {
-        smt_parallel_params pp(ctx.m_params);
-        unsigned num_global_bb_batch_threads = pp.num_global_bb_batch_threads();
+        params_ref const& params = ctx.get_params();
+        parallel_params pp(params);
+        unsigned num_global_bb_batch_threads = pp.num_bb_threads();
         if (num_global_bb_batch_threads > 2)
-            throw default_exception("smt_parallel.num_global_bb_batch_threads must be 0, 1, or 2");
+            throw default_exception("parallel.num_bb_threads must be 0, 1, or 2");
         unsigned num_workers = std::min((unsigned)std::thread::hardware_concurrency(), ctx.get_fparams().m_threads);
-        unsigned num_sls_threads = (pp.sls() ? 1 : 0);
-        unsigned num_core_min_threads = (pp.core_minimize() ? 1 : 0);
-        unsigned num_global_bb_fl_threads = pp.num_global_bb_fl_threads();
-        if (num_global_bb_fl_threads > 2)
-            throw default_exception("smt_parallel.num_global_bb_fl_threads must be 0, 1, or 2");
-        if (num_global_bb_fl_threads > 0 && num_global_bb_batch_threads > 0)
-            throw default_exception("smt_parallel.num_global_bb_fl_threads and smt_parallel.num_global_bb_batch_threads cannot both be enabled");
+        unsigned num_sls_threads = 0;
+        bool core_minimize = pp.core_minimize();
+        if (pp.ablate_backtracking())
+            core_minimize = false;
+        unsigned num_core_min_threads = (core_minimize ? 1 : 0);
+        unsigned num_global_bb_fl_threads = 0;
         unsigned num_global_bb_threads = num_global_bb_fl_threads > 0 ? num_global_bb_fl_threads : num_global_bb_batch_threads;
         unsigned total_threads = num_workers + num_sls_threads + num_core_min_threads + num_global_bb_threads;
 
@@ -1842,7 +1892,7 @@ namespace smt {
             m_sls_worker = alloc(sls_worker, *this);
             sl.push_child(&(m_sls_worker->limit()));
         }
-        if (pp.core_minimize()) {
+        if (num_core_min_threads == 1) {
             m_core_minimizer_worker = alloc(core_minimizer_worker, *this, asms);
             sl.push_child(&(m_core_minimizer_worker->limit()));
         }
@@ -1858,17 +1908,31 @@ namespace smt {
 
         m_batch_manager.initialize(num_global_bb_threads);
         
+        auto safe_run = [&](auto* w) {
+            try {
+                w->run();
+            }
+            catch (z3_error& err) {
+                if (!w->limit().is_canceled())
+                    m_batch_manager.set_exception(err.error_code());
+            }
+            catch (z3_exception& ex) {
+                if (!w->limit().is_canceled() && !is_cancellation_exception(ex.what()))
+                    m_batch_manager.set_exception(ex.what());
+            }
+        };
+
         // Launch threads
         vector<std::thread> threads(total_threads);
         unsigned thread_idx = 0;
         for (auto* w : m_workers) 
-            threads[thread_idx++] = std::thread([&, w]() { w->run(); });                
+            threads[thread_idx++] = std::thread([&, w]() { safe_run(w); });
         if (m_sls_worker)
-            threads[thread_idx++] = std::thread([&]() { m_sls_worker->run(); });
+            threads[thread_idx++] = std::thread([&]() { safe_run(m_sls_worker.get()); });
         if (m_core_minimizer_worker)
-            threads[thread_idx++] = std::thread([&]() { m_core_minimizer_worker->run(); });
+            threads[thread_idx++] = std::thread([&]() { safe_run(m_core_minimizer_worker.get()); });
         for (auto* w : m_global_backbones_workers) 
-            threads[thread_idx++] = std::thread([&, w]() { w->run(); });                   
+            threads[thread_idx++] = std::thread([&, w]() { safe_run(w); });
 
 
         // Wait for all threads to finish

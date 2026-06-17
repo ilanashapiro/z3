@@ -23,6 +23,7 @@ Notes:
 #include "ast/arith_decl_plugin.h"
 #include "ast/rewriter/rewriter_types.h"
 #include "ast/rewriter/bool_rewriter.h"
+#include "ast/rewriter/seq_subset.h"
 #include "util/params.h"
 #include "util/lbool.h"
 #include "util/sign.h"
@@ -128,12 +129,14 @@ class seq_rewriter {
     };
 
     seq_util       m_util;
+    seq_subset     m_subset;
     arith_util     m_autil;
     bool_rewriter  m_br;
     // re2automaton   m_re2aut;
     op_cache       m_op_cache;
     expr_ref_vector m_es, m_lhs, m_rhs;
-    bool           m_coalesce_chars;    
+    bool           m_coalesce_chars;
+    bool           m_in_bisim { false };
 
     enum length_comparison {
         shorter_c, 
@@ -178,6 +181,7 @@ class seq_rewriter {
     expr_ref mk_der_concat(expr* a, expr* b);
     expr_ref mk_der_union(expr* a, expr* b);
     expr_ref mk_der_inter(expr* a, expr* b);
+    expr_ref mk_der_xor(expr* a, expr* b);
     expr_ref mk_der_compl(expr* a);
     expr_ref mk_der_cond(expr* cond, expr* ele, sort* seq_sort);
     expr_ref mk_der_antimirov_union(expr* r1, expr* r2);
@@ -260,6 +264,8 @@ class seq_rewriter {
     br_status mk_re_complement(expr* a, expr_ref& result);
     br_status mk_re_star(expr* a, expr_ref& result);
     br_status mk_re_diff(expr* a, expr* b, expr_ref& result);
+    br_status mk_re_xor(expr* a, expr* b, expr_ref& result);
+    br_status mk_re_xor0(expr* a, expr* b, expr_ref& result);
     br_status mk_re_plus(expr* a, expr_ref& result);
     br_status mk_re_opt(expr* a, expr_ref& result);
     br_status mk_re_power(func_decl* f, expr* a, expr_ref& result);
@@ -340,7 +346,7 @@ class seq_rewriter {
 
 public:
     seq_rewriter(ast_manager & m, params_ref const & p = params_ref()):
-        m_util(m), m_autil(m), m_br(m, p), // m_re2aut(m), 
+        m_util(m), m_subset(m_util.re), m_autil(m), m_br(m, p), // m_re2aut(m), 
         m_op_cache(m), m_es(m), 
         m_lhs(m), m_rhs(m), m_coalesce_chars(true) {
     }
@@ -379,6 +385,18 @@ public:
         return result;
     }
 
+    /*
+     * Construct r1 XOR r2 applying the structural rewrites in
+     * mk_re_xor (r XOR r = empty, comp/empty/full normalisation, AC
+     * ordering). Used by the bisimulation procedure.
+     */
+    expr_ref mk_re_xor_simplified(expr* r1, expr* r2) {
+        expr_ref result(m());
+        if (mk_re_xor(r1, r2, result) == BR_FAILED)
+            result = re().mk_xor(r1, r2);
+        return result;
+    }
+
     /**
      * check if regular expression is of the form all ++ s ++ all ++ t + u ++ all, where, s, t, u are sequences
      */
@@ -408,6 +426,17 @@ public:
     */
     expr_ref mk_derivative(expr* r);
 
+    /*
+    Classical (non-antimirov) Brzozowski derivative wrt the canonical
+    variable v0 = (:var 0). Unlike `mk_derivative` this entry point keeps
+    the symbolic derivative as a single transition regex (TRegex): boolean
+    operators are pushed into the ITE leaves rather than lifted to the top
+    via _OP_RE_ANTIMIROV_UNION. Used by the regex_bisim equivalence
+    procedure which relies on each leaf of D(p XOR q) being a coherent
+    XOR pair (D_v p) XOR (D_v q).
+    */
+    expr_ref mk_brz_derivative(expr* r);
+
     // heuristic elimination of element from condition that comes form a derivative.
     // special case optimization for conjunctions of equalities, disequalities and ranges.
     void elim_condition(expr* elem, expr_ref& cond);
@@ -424,4 +453,3 @@ public:
     */
     lbool some_string_in_re(expr* r, zstring& s);
 };
-

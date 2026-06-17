@@ -22,6 +22,7 @@ Notes:
 #include "solver/check_sat_result.h"
 #include "solver/progress_callback.h"
 #include "util/params.h"
+#include "util/sat_literal.h"
 
 class solver;
 class model_converter;
@@ -57,7 +58,6 @@ solver* mk_smt2_solver(ast_manager& m, params_ref const& p, symbol const& logic 
 class solver : public check_sat_result, public user_propagator::core {
     params_ref  m_params;
     symbol      m_cancel_backup_file;
-    statistics  m_parallel_stats;
 public:
     struct scored_literal {
         expr_ref lit;
@@ -310,38 +310,17 @@ public:
     virtual unsigned get_assign_level(expr* e) const { return UINT_MAX; }
     virtual bool is_relevant(expr* e) const { return true; }
     virtual unsigned get_num_bool_vars() const { return UINT_MAX; }
-    virtual unsigned get_bool_var(expr* e) const { return UINT_MAX; }
-    virtual expr* bool_var2expr(unsigned) const { return nullptr; }
-    virtual lbool get_assignment(unsigned) const { return l_undef; }
-    virtual double get_activity(unsigned) const { return 0.0; }
-    virtual bool was_eliminated(unsigned) const { return false; }
+    virtual sat::bool_var get_bool_var(expr* e) const { return sat::null_bool_var; }
+    virtual expr* bool_var2expr(sat::bool_var) const { return nullptr; }
+    virtual lbool get_assignment(sat::bool_var) const { return l_undef; }
+    virtual double get_activity(sat::bool_var) const { return 0.0; }
+    virtual bool was_eliminated(sat::bool_var) const { return false; }
 
     virtual void pop_to_base_level() {}
 
     virtual void setup_for_parallel() {}
 
     virtual void set_preprocess(bool) {}
-
-    virtual void set_max_conflicts(unsigned max_conflicts) {
-        params_ref p;
-        p.set_uint("max_conflicts", max_conflicts);
-        updt_params(p);
-    }
-
-    virtual unsigned get_max_conflicts() const { return UINT_MAX; }
-
-    virtual void reset_parallel_statistics() {
-        m_parallel_stats.reset();
-    }
-
-    virtual void add_parallel_statistics(statistics const& st) {
-        m_parallel_stats.copy(st);
-    }
-
-    virtual void collect_parallel_statistics(statistics& st) const {
-        st.copy(m_parallel_stats);
-        collect_statistics(st);
-    }
     
     virtual void get_levels(ptr_vector<expr> const& vars, unsigned_vector& depth) = 0;
 

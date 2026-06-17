@@ -27,6 +27,7 @@ Notes:
 #include "params/smt_params.h"
 #include "params/smt_params_helper.hpp"
 #include "solver/solver_na2as.h"
+#include "solver/parallel_params.hpp"
 #include "solver/mus.h"
 
 #include <algorithm>
@@ -88,13 +89,13 @@ namespace {
             updt_params(p);
         }
 
-        solver * translate(ast_manager & m, params_ref const & p) override {
-            ast_translation translator(get_manager(), m);
+        solver * translate(ast_manager & target, params_ref const & p) override {
+            ast_translation translator(get_manager(), target);
             params_ref init;
             init.copy(get_params());
             init.copy(p);
 
-            smt_solver* result = alloc(smt_solver, m, init, m_logic);
+            smt_solver* result = alloc(smt_solver, target, init, m_logic);
             smt::kernel::copy(m_context, result->m_context, true);
 
             if (mc0())
@@ -221,7 +222,7 @@ namespace {
 
         expr_ref_vector get_assigned_literals() override {
             expr_ref_vector result(m);
-            auto& ctx = const_cast<smt::kernel&>(m_context).get_context();
+            auto const& ctx = m_context.get_context();
             for (auto lit : ctx.assigned_literals()) {
                 expr* atom = ctx.bool_var2expr(lit.var());
                 if (!atom)
@@ -232,30 +233,27 @@ namespace {
         }
 
         unsigned get_assign_level(expr* e) const override {
-            auto& ctx = const_cast<smt::kernel&>(m_context).get_context();
-            expr* atom = e;
-            get_manager().is_not(e, atom);
-            if (!ctx.b_internalized(atom))
+            auto const& ctx = m_context.get_context();
+            get_manager().is_not(e, e);
+            if (!ctx.b_internalized(e))
                 return UINT_MAX;
-            return ctx.get_assign_level(ctx.get_bool_var(atom));
+            return ctx.get_assign_level(ctx.get_bool_var(e));
         }
 
         bool is_relevant(expr* e) const override {
-            auto& ctx = const_cast<smt::kernel&>(m_context).get_context();
-            expr* atom = e;
-            get_manager().is_not(e, atom);
-            return ctx.b_internalized(atom) && ctx.is_relevant(atom);
+            auto const& ctx = m_context.get_context();
+            get_manager().is_not(e, e);
+            return ctx.b_internalized(e) && ctx.is_relevant(e);
         }
 
         unsigned get_num_bool_vars() const override {
-            return const_cast<smt::kernel&>(m_context).get_context().get_num_bool_vars();
+            return m_context.get_context().get_num_bool_vars();
         }
 
-        unsigned get_bool_var(expr* e) const override {
-            auto& ctx = const_cast<smt::kernel&>(m_context).get_context();
-            expr* atom = e;
-            get_manager().is_not(e, atom);
-            return ctx.b_internalized(atom) ? ctx.get_bool_var(atom) : UINT_MAX;
+        sat::bool_var get_bool_var(expr* e) const override {
+            auto const& ctx = m_context.get_context();
+            get_manager().is_not(e, e);
+            return ctx.b_internalized(e) ? ctx.get_bool_var(e) : sat::null_bool_var;
         }
 
         void pop_to_base_level() override {
@@ -263,32 +261,11 @@ namespace {
         }
 
         void setup_for_parallel() override {
-            const_cast<smt::kernel&>(m_context).get_context().setup_for_parallel();
+            m_context.get_context().setup_for_parallel();
         }
 
         void set_preprocess(bool f) override {
             m_context.set_preprocess(f);
-        }
-
-        void set_max_conflicts(unsigned max_conflicts) override {
-            auto& ctx = const_cast<smt::kernel&>(m_context).get_context();
-            ctx.get_fparams().m_max_conflicts = max_conflicts;
-        }
-
-        unsigned get_max_conflicts() const override {
-            return const_cast<smt::kernel&>(m_context).get_context().get_fparams().m_max_conflicts;
-        }
-
-        void reset_parallel_statistics() override {
-            m_context.reset_aux_statistics();
-        }
-
-        void add_parallel_statistics(statistics const& st) override {
-            m_context.add_aux_statistics(st);
-        }
-
-        void collect_parallel_statistics(statistics& st) const override {
-            m_context.collect_statistics(st);
         }
 
         void get_backbone_candidates(vector<solver::scored_literal>& candidates, unsigned max_num) override {
@@ -460,15 +437,17 @@ namespace {
 
         expr_ref_vector cube(expr_ref_vector& vars, unsigned cutoff) override {
             ast_manager& m = get_manager();
-            if (!get_params().get_bool("cube.lookahead", false)) {
+            parallel_params pp(get_params());
+            if (!pp.cube_lookahead()) {
                 auto& ctx = m_context.get_context();
-                obj_hashtable<expr> selected_vars;
+                expr_mark selected_vars;
                 for (expr* v : vars)
-                    selected_vars.insert(v);
-                expr_ref_vector candidates(m);
-                expr_ref result(m);
-                double score = 0.0;
-                unsigned n = 0;
+                    selected_vars.mark(v);
+                struct candidate {
+                    expr*  e;
+                    double score;
+                };
+                vector<candidate> candidates;
 
                 ctx.pop_to_search_level();
                 for (unsigned v = 0; v < ctx.get_num_bool_vars(); ++v) {
@@ -477,24 +456,31 @@ namespace {
                     expr* e = ctx.bool_var2expr(v);
                     if (!e)
                         continue;
-                    if (!selected_vars.empty() && !selected_vars.contains(e))
+                    if (!vars.empty() && !selected_vars.is_marked(e))
                         continue;
-                    candidates.push_back(e);
-                    double new_score = ctx.get_activity(v);
-                    // Match smt_parallel: cube split tie-breaking is independent
-                    // of the per-worker SMT search seed.
-                    if (new_score > score || !result || (new_score == score && m_rand(++n) == 0)) {
-                        score = new_score;
-                        result = e;
-                    }
+                    candidates.push_back({ e, ctx.get_activity(v) });
+                }
+
+                std::stable_sort(candidates.begin(), candidates.end(),
+                    [](candidate const& a, candidate const& b) {
+                        return a.score > b.score;
+                    });
+                for (unsigned i = 0, j = 0; i < candidates.size(); i = j) {
+                    j = i + 1;
+                    while (j < candidates.size() && candidates[i].score == candidates[j].score)
+                        ++j;
+                    if (j > i + 1)
+                        shuffle(j - i, candidates.data() + i, m_rand);
                 }
 
                 vars.reset();
-                vars.append(candidates);
-
                 expr_ref_vector lits(m);
-                if (result)
-                    lits.push_back(result);
+                for (auto const &c : candidates) {
+                    vars.push_back(c.e);
+                    if (lits.size() < cutoff)                       
+                        lits.push_back(c.e);
+                }
+
                 return lits;
             }
 
@@ -688,4 +674,3 @@ public:
 solver_factory * mk_smt_solver_factory() {
     return alloc(smt_solver_factory);
 }
-
