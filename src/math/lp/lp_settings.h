@@ -264,7 +264,7 @@ private:
     bool             m_dio_ignore_big_nums = false;
     unsigned         m_dio_calls_period = 4;
     bool             m_dio_run_gcd = true;
-    bool             m_lcube = true;
+    bool             m_lcube = false;
     unsigned         m_lcube_flips = 16;
 public:
     bool lcube() const { return m_lcube; }
