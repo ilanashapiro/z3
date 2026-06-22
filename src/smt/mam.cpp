@@ -1881,8 +1881,10 @@ namespace {
             m_pool.recycle(v);
         }
 
-        void update_max_generation(enode * n, enode * prev) {
-            m_max_generation = std::max(m_max_generation, n->get_generation());
+        void update_max_generation(enode * n, enode * prev, enode * min_gen_match=nullptr) {
+            unsigned new_gen = min_gen_match ? min_gen_match->get_generation() : n->get_generation();
+
+            m_max_generation = std::max(m_max_generation, new_gen);
 
             if (m.has_trace_stream() || is_trace_enabled(TraceTag::causality))
                 m_used_enodes.push_back(std::make_tuple(prev, n));
@@ -1910,15 +1912,18 @@ namespace {
             }
             while (curr != first);
             if (matching_cgr)
-                update_max_generation(min_gen_match, first);  
+                update_max_generation(matching_cgr, first, min_gen_match);  
             return matching_cgr;
         }
 
         enode * get_next_f_app(func_decl * lbl, unsigned num_expected_args, enode * first, enode * curr) {
             curr = curr->get_next();
             while (curr != first) {
-                if (curr->get_decl() == lbl && curr->get_num_args() == num_expected_args && curr->is_cgr())
+                if (curr->get_decl() == lbl && curr->get_num_args() == num_expected_args && curr->is_cgr()) {
+                    if (m.has_trace_stream() || is_trace_enabled(TraceTag::causality))
+                        m_used_enodes.push_back(std::make_tuple(first, curr));
                     return curr;
+                }
                 curr = curr->get_next();
             }
             return nullptr;
@@ -2927,6 +2932,8 @@ namespace {
             SASSERT(m.is_pattern(mp));
             SASSERT(first_idx < mp->get_num_args());
             app * p           = to_app(mp->get_arg(first_idx));
+            if (is_ground(p))
+                return;
             func_decl * lbl   = p->get_decl();
             unsigned lbl_id   = lbl->get_small_id();
             m_trees.reserve(lbl_id+1, nullptr);
@@ -3754,7 +3761,7 @@ namespace {
         }
 
         void match_new_patterns() {
-            TRACE(mam_new_pat, tout << "matching new patterns:\n";);
+            TRACE(mam, tout << "matching new patterns:\n";);
             m_tmp_trees_to_delete.reset();
             for (auto const& kv : m_new_patterns) {
                 if (m_context.get_cancel_flag()) {
@@ -3800,8 +3807,14 @@ namespace {
             for (unsigned i = 0; i < num_patterns; ++i) {
                 app * pat = to_app(mp->get_arg(i));
                 TRACE(mam_pat, tout << mk_ismt2_pp(qa, m) << "\npat:\n" << mk_ismt2_pp(pat, m) << "\n";);
-                SASSERT(!pat->is_ground());
-                todo.push_back(pat);
+                if (pat->is_ground()) {
+                    enode * e = mk_enode(m_context, qa, pat);
+                    m_context.mark_as_relevant(e);
+                    m_context.push_trail(add_shared_enode_trail(*this, e));
+                    m_shared_enodes.insert(e);
+                }
+                else
+                    todo.push_back(pat);
             }
             while (!todo.empty()) {
                 app * n = todo.back();
@@ -3852,10 +3865,10 @@ namespace {
             // Ground patterns are discarded.
             // However, the simplifier may turn a non-ground pattern into a ground one.
             // So, we should check it again here.
-            unsigned num_patterns = mp->get_num_args();
-            for (unsigned i = 0; i < num_patterns; ++i)
-                if (is_ground(mp->get_arg(i)))
-                    return; // ignore multi-pattern containing ground pattern.
+            if (all_of(*mp, [](expr *arg) { return is_ground(arg); }))
+                return;  // ignore multi-pattern containing only ground pattern.
+            if (any_of(*mp, [](expr *arg) { return has_quantifiers(arg); }))
+                return;  // patterns with quantifiers are not handled.
             update_filters(qa, mp);
             collect_ground_exprs(qa, mp);
             m_new_patterns.push_back(qp_pair(qa, mp));
@@ -3863,7 +3876,7 @@ namespace {
             // e-matching. So, for a multi-pattern [ p_1, ..., p_n ],
             // we have to make n insertions. In the i-th insertion,
             // the pattern p_i is assumed to be the first one.
-            for (unsigned i = 0; i < num_patterns; ++i)
+            for (unsigned i = 0; i < mp->get_num_args(); ++i)
                 m_trees.add_pattern(qa, mp, i);
         }
 
@@ -3967,7 +3980,7 @@ namespace {
 #endif
             unsigned min_gen = 0, max_gen = 0;
             m_interpreter.get_min_max_top_generation(min_gen, max_gen);
-            m_context.add_instance(qa, pat, num_bindings, bindings, nullptr, max_generation, min_gen, max_gen, used_enodes);
+            m_context.add_instance(qa, pat, num_bindings, bindings, max_generation, min_gen, max_gen, used_enodes);
         }
 
         bool is_shared(enode * n) const override {

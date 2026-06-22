@@ -120,7 +120,6 @@
     X(model_based_opt) \
     X(factor_rewriter) \
     X(smt2print_parse) \
-    X(tptp) \
     X(substitution) \
     X(polynomial) \
     X(polynomial_factorization) \
@@ -164,6 +163,7 @@
     X(rcf) \
     X(polynorm) \
     X(qe_arith) \
+    X(mbp_qel) \
     X(expr_substitution) \
     X(sorting_network) \
     X(theory_pb) \
@@ -534,7 +534,7 @@ int main(int argc, char ** argv) {
     }
 
 #ifndef __EMSCRIPTEN__
-    if (num_jobs > 0)
+    if (num_jobs > 0 && (test_all || requested_tests.size() > 1))
         return run_parallel(argv[0], test_all, num_jobs, extra_args, requested_tests);
 #endif
 

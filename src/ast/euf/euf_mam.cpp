@@ -133,7 +133,7 @@ namespace euf {
     // Instructions
     //
     // ------------------------------------
-    typedef enum {
+    typedef enum : uint8_t {
         INIT1=0, INIT2,  INIT3,  INIT4,  INIT5,  INIT6,  INITN, INITAC,
         BIND1,   BIND2,  BIND3,  BIND4,  BIND5,  BIND6,  BINDN,
         YIELD1,  YIELD2, YIELD3, YIELD4, YIELD5, YIELD6, YIELDN,
@@ -1951,14 +1951,12 @@ namespace euf {
 
         enode * get_next_f_app(func_decl * lbl, unsigned num_expected_args, enode * first, enode * curr) {
             curr = curr->get_next();
-            enode *matching_cgr = nullptr, *min_gen_match = nullptr;
             while (curr != first) {
-                get_f_app(lbl, num_expected_args, curr, matching_cgr, min_gen_match);
+                if (curr->get_decl() == lbl && curr->num_args() == num_expected_args && curr->is_cgr())
+                    return curr;
                 curr = curr->get_next();
             }
-            if (matching_cgr)
-                update_max_generation(min_gen_match, first);
-            return matching_cgr;
+            return nullptr;
         }
 
         /**

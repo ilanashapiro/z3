@@ -64,6 +64,7 @@ namespace smt {
 
     class model_generator;
     class context;
+    class kernel;
 
     struct oom_exception : public z3_error {
         oom_exception() : z3_error(ERR_MEMOUT) {}
@@ -85,6 +86,7 @@ namespace smt {
         friend class model_generator;
         friend class lookahead;
         friend class parallel;
+        friend class kernel;
     public:
         statistics                  m_stats;
 
@@ -122,7 +124,6 @@ namespace smt {
         // enodes. Examples: boolean expression nested in an
         // uninterpreted function.
         expr_ref_vector             m_e_internalized_stack; // stack of the expressions already internalized as enodes.
-        quantifier_ref_vector       m_l_internalized_stack;
 
         ptr_vector<justification>   m_justifications;
 
@@ -293,6 +294,10 @@ namespace smt {
             return m_fparams;
         }
 
+        smt_params const& get_fparams() const {
+            return m_fparams;
+        }
+
         params_ref const & get_params() {
             return m_params;
         }
@@ -453,6 +458,8 @@ namespace smt {
         svector<double> const & get_activity_vector() const { return m_activity; }
 
         double get_activity(bool_var v) const { return m_activity[v]; }
+        unsigned get_num_assignments() const { return m_stats.m_num_assignments; }
+        unsigned get_birthdate(bool_var v) const { return m_birthdate[v]; }
 
         void set_activity(bool_var v, double act) { m_activity[v] = act; }
 
@@ -539,6 +546,8 @@ namespace smt {
             return m_scope_lvl == m_search_lvl;
         }
 
+        void pop_to_search_level() { pop_to_search_lvl(); }
+
         bool tracking_assumptions() const {
             return !m_assumptions.empty() && m_search_lvl > m_base_lvl;
         }
@@ -620,8 +629,8 @@ namespace smt {
             return m_asserted_formulas.has_quantifiers();
         }
 
-        fingerprint * add_fingerprint(void * data, unsigned data_hash, unsigned num_args, enode * const * args, expr* def = nullptr) {
-            return m_fingerprints.insert(data, data_hash, num_args, args, def);
+        fingerprint * add_fingerprint(void * data, unsigned data_hash, unsigned num_args, enode * const * args) {
+            return m_fingerprints.insert(data, data_hash, num_args, args);
         }
 
         theory_id get_var_theory(bool_var v) const {
@@ -785,6 +794,13 @@ namespace smt {
             return get_bdata(get_bool_var(n));
         }
 
+        void update_generation(enode * n);
+
+        void update_generation(expr * e) {
+            if (is_app(e) && e_internalized(e))
+                update_generation(get_enode(to_app(e)));
+        }
+
         typedef std::pair<expr *, bool> expr_bool_pair;
 
         void ts_visit_child(expr * n, bool gate_ctx, svector<expr_bool_pair> & todo, bool & visited);
@@ -862,16 +878,6 @@ namespace smt {
         };
         mk_enode_trail   m_mk_enode_trail;
         void undo_mk_enode();
-
-        friend class mk_lambda_trail;
-        class mk_lambda_trail : public trail {
-            context& ctx;
-        public:
-            mk_lambda_trail(context& ctx) :ctx(ctx) {}
-            void undo() override { ctx.undo_mk_lambda(); }
-        };
-        mk_lambda_trail   m_mk_lambda_trail;
-        void undo_mk_lambda();
 
 
         void apply_sort_cnstr(app * term, enode * e);
@@ -1018,7 +1024,7 @@ namespace smt {
 
         bool_var mk_bool_var(expr * n);
 
-        enode * mk_enode(app * n, bool suppress_args, bool merge_tf, bool cgc_enabled);
+        enode * mk_enode(expr * n, bool suppress_args, bool merge_tf, bool cgc_enabled);
 
         void attach_th_var(enode * n, theory * th, theory_var v);
 
@@ -1106,8 +1112,8 @@ namespace smt {
 
         bool contains_instance(quantifier * q, unsigned num_bindings, enode * const * bindings);
 
-        bool add_instance(quantifier * q, app * pat, unsigned num_bindings, enode * const * bindings, expr* def, unsigned max_generation,
-                          unsigned min_top_generation, unsigned max_top_generation, vector<std::tuple<enode *, enode*>> & used_enodes /*gives the equalities used for the pattern match, see mam.cpp for more info*/);
+        bool add_instance(quantifier * q, app * pat, unsigned num_bindings, enode * const * bindings, 
+            unsigned max_generation, unsigned min_top_generation, unsigned max_top_generation, vector<std::tuple<enode *, enode*>> & used_enodes /*gives the equalities used for the pattern match, see mam.cpp for more info*/);
 
         void set_global_generation(unsigned generation) { m_generation = generation; }
 
@@ -1147,7 +1153,7 @@ namespace smt {
 
         void push_eq(enode * lhs, enode * rhs, eq_justification const & js) {
             if (lhs->get_root() != rhs->get_root()) {
-                SASSERT(lhs->get_expr()->get_sort() == rhs->get_expr()->get_sort());
+                SASSERT(lhs->get_sort() == rhs->get_sort());
                 m_eq_propagation_queue.push_back(new_eq(lhs, rhs, js));
             }
         }
@@ -1701,6 +1707,8 @@ namespace smt {
 
         lbool setup_and_check(bool reset_cancel = true);
 
+        void setup_for_parallel();
+
         void reduce_assertions();
 
         bool resource_limits_exceeded();
@@ -1917,5 +1925,3 @@ namespace smt {
     std::ostream& operator<<(std::ostream& out, enode_pp const& p);
 
 };
-
-
