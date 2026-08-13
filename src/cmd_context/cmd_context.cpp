@@ -385,10 +385,21 @@ bool cmd_context::builtin_signature_collides(symbol const& s, unsigned arity, so
     catch (ast_exception&) {
         return false;
     }
-    // A function/overload collision (arity > 0) is always rejected: the user
-    // declaration would clash with a built-in of the same argument sorts.
-    if (arity > 0)
+    if (arity > 0) {
+        // A function/overload collision generally blocks: the user
+        // declaration would clash with a built-in of the same argument
+        // sorts. Special-relations symbols (partial-order, linear-order,
+        // tree-order, transitive-closure, ...) are a documented exception --
+        // they are Z3 extensions rather than SMT-LIB reserved core symbols,
+        // and downstream projects (e.g. Verus preludes) historically
+        // declare their own function-symbol named 'partial-order' etc. The
+        // pre-#10411 parser accepted these silently; treat them as
+        // shadowable here to preserve that behavior.
+        if (is_app(result) &&
+            to_app(result)->get_family_id() == m().get_family_id(symbol("specrels")))
+            return false;
         return true;
+    }
     // For nullary symbols there are no argument sorts to distinguish an
     // overload. Only genuine reserved core constants (e.g. true/false in the
     // basic theory) block a user declaration. Z3-specific extension constants

@@ -575,6 +575,7 @@ set(Z3_API_HEADER_FILES_TO_SCAN
   z3_optimization.h
   z3_fpa.h
   z3_spacer.h
+  z3_fastpp.h
 )
 set(Z3_FULL_PATH_API_HEADER_FILES_TO_SCAN "")
 foreach (header_file ${Z3_API_HEADER_FILES_TO_SCAN})

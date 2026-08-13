@@ -20,9 +20,11 @@ Revision History:
 #pragma once
 
 #include "util/hashtable.h"
+#include "util/obj_hashtable.h"
 #include "util/mutex.h"
 #include "util/event_handler.h"
 #include "ast/ast.h"
+#include "ast/smt2_stream_pp.h"
 #include "ast/arith_decl_plugin.h"
 #include "ast/bv_decl_plugin.h"
 #include "ast/seq_decl_plugin.h"
@@ -107,6 +109,16 @@ namespace api {
         
         std::string                m_string_buffer; // temporary buffer used to cache strings sent to the "external" world.
 
+        // Persistent per-context cache for SMT2-serialized ASTs. Keyed on
+        // expr* (the AST manager already hash-conses so distinct-but-equal
+        // exprs share a pointer). m_smt2_cache_pin holds a strong ref on every
+        // cached expr so its address / id can never be reused underneath us
+        // even if the caller drops all their refs.
+        // See mk_units_smt2_string / Z3_solver_get_units_smt2.
+        obj_map<expr, std::string> m_ast_smt2_cache;
+        scoped_ptr<expr_ref_vector> m_smt2_cache_pin;
+        scoped_ptr<smt2_stream_pp> m_stream_pp;
+
         Z3_error_code              m_error_code;
         Z3_error_handler *         m_error_handler;
         std::string                m_exception_msg; // catch the message associated with a Z3 exception
@@ -187,6 +199,20 @@ namespace api {
         // This method is used to communicate local/internal strings with the "external world"
         const char * mk_external_string(std::string && str);
         sbuffer<char>              m_char_buffer;
+
+        // Fast path used by Z3_solver_get_units_smt2. Serializes each expr in
+        // fmls to SMT2, memoizing per ast_id in m_ast_smt2_cache, and
+        // concatenates the results with '\n' separators into m_string_buffer.
+        const char * mk_units_smt2_string(expr_ref_vector const & fmls);
+
+        // Single-AST fast path (Z3_ast_to_string_fast). No cache -- isolates
+        // emitter cost for ablation vs Z3_ast_to_string.
+        const char * mk_ast_fast_string(expr * e);
+
+        void reset_smt2_cache() {
+            m_ast_smt2_cache.reset();
+            if (m_smt2_cache_pin) m_smt2_cache_pin->reset();
+        }
 
 
         // Create a numeral of the given sort

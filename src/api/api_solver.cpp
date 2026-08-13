@@ -592,6 +592,24 @@ extern "C" {
         Z3_CATCH_RETURN(nullptr);
     }
 
+    Z3_string Z3_API Z3_solver_get_units_smt2(Z3_context c, Z3_solver s) {
+        Z3_TRY;
+        LOG_Z3_solver_get_units_smt2(c, s);
+        RESET_ERROR_CODE();
+        init_solver(c, s);
+        expr_ref_vector fmls = to_solver_ref(s)->get_units();
+        return mk_c(c)->mk_units_smt2_string(fmls);
+        Z3_CATCH_RETURN("");
+    }
+
+    void Z3_API Z3_reset_smt2_cache(Z3_context c) {
+        Z3_TRY;
+        LOG_Z3_reset_smt2_cache(c);
+        RESET_ERROR_CODE();
+        mk_c(c)->reset_smt2_cache();
+        Z3_CATCH;
+    }
+
     Z3_ast_vector Z3_API Z3_solver_get_non_units(Z3_context c, Z3_solver s) {
         Z3_TRY;
         LOG_Z3_solver_get_non_units(c, s);

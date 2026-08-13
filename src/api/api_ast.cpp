@@ -1077,6 +1077,14 @@ extern "C" {
         Z3_CATCH_RETURN(nullptr);
     }
 
+    Z3_string Z3_API Z3_ast_to_string_fast(Z3_context c, Z3_ast a) {
+        Z3_TRY;
+        LOG_Z3_ast_to_string_fast(c, a);
+        RESET_ERROR_CODE();
+        return mk_c(c)->mk_ast_fast_string(to_expr(a));
+        Z3_CATCH_RETURN("");
+    }
+
     Z3_string Z3_API Z3_sort_to_string(Z3_context c, Z3_sort s) {
         return Z3_ast_to_string(c, reinterpret_cast<Z3_ast>(s));
     }

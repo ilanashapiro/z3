@@ -216,6 +216,42 @@ namespace api {
         return m_string_buffer.c_str();
     }
 
+    const char * context::mk_ast_fast_string(expr * e) {
+        if (!m_stream_pp) {
+            m_stream_pp = alloc(smt2_stream_pp, m());
+        }
+        m_stream_pp->reset();
+        m_stream_pp->print(e);
+        m_string_buffer = m_stream_pp->take_buffer();
+        return m_string_buffer.c_str();
+    }
+
+    const char * context::mk_units_smt2_string(expr_ref_vector const & fmls) {
+        if (!m_stream_pp) {
+            m_stream_pp = alloc(smt2_stream_pp, m());
+        }
+        if (!m_smt2_cache_pin) {
+            m_smt2_cache_pin = alloc(expr_ref_vector, m());
+        }
+        m_string_buffer.clear();
+        // Reserve a plausible amount up front to avoid rounds of reallocation
+        // when concatenating many small cached strings.
+        m_string_buffer.reserve(fmls.size() * 32);
+        for (expr * f : fmls) {
+            auto it = m_ast_smt2_cache.find_iterator(f);
+            if (it == m_ast_smt2_cache.end()) {
+                m_stream_pp->reset();
+                m_stream_pp->print(f);
+                m_smt2_cache_pin->push_back(f);
+                m_ast_smt2_cache.insert(f, m_stream_pp->take_buffer());
+                it = m_ast_smt2_cache.find_iterator(f);
+            }
+            m_string_buffer.append(it->m_value);
+            m_string_buffer.push_back('\n');
+        }
+        return m_string_buffer.c_str();
+    }
+
     expr * context::mk_numeral_core(rational const & n, sort * s) {
         expr* e = nullptr;
         family_id fid  = s->get_family_id();

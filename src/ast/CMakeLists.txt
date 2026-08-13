@@ -11,6 +11,7 @@ z3_add_component(ast
     ast_printer.cpp
     ast_smt2_pp.cpp
     ast_smt_pp.cpp
+    smt2_stream_pp.cpp
     ast_pp_dot.cpp
     ast_translation.cpp
     ast_util.cpp

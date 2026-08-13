@@ -66,6 +66,13 @@ public:
     virtual format_ns::format * pp_string_literal(app * t);
     virtual format_ns::format * pp_sort(sort * s);
     virtual format_ns::format * pp_fdecl_ref(func_decl * f);
+
+    // Central dispatch for pretty-printing a nullary application (a constant,
+    // numeric literal, string, BV literal, FP literal, datalog value, label
+    // literal, ...). Consolidates what would otherwise be a case-by-case
+    // theory match at every call site, so plugin-specific formatting has
+    // exactly one home. Uses parameters from the pp_params.pyg schema.
+    format_ns::format * pp_leaf(app * c, params_ref const & params);
     format_ns::format * pp_fdecl_name(symbol const & fname, unsigned & len, bool is_skolem) const;
     format_ns::format * pp_fdecl_name(func_decl * f, unsigned & len) const;
 };
