@@ -91,8 +91,7 @@ public:
     void updt_params(params_ref const& p) override { m_rw.cfg().updt_params(p); }
     void collect_param_descrs(param_descrs& r) override;
     void reduce() override;
+    void translate(dependent_expr_simplifier const& src, ast_translation& tr) override;
 };
 
-/*
-  ADD_SIMPLIFIER("bv1-blast", "reduce bit-vector expressions into bit-vectors of size 1 (notes: only equality, extract and concat are supported).", "alloc(bv1_blaster_simplifier, m, p, s)")
-*/
+Z3_ADD_SIMPLIFIER(bv1_blast, "bv1-blast", "reduce bit-vector expressions into bit-vectors of size 1 (notes: only equality, extract and concat are supported).", alloc(bv1_blaster_simplifier, m, p, s));

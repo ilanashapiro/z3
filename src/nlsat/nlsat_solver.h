@@ -21,6 +21,7 @@ Revision History:
 #pragma once
 
 #include "nlsat/nlsat_types.h"
+#include "nlsat/nlsat_transcendentals.h"
 #include "util/params.h"
 #include "util/statistics.h"
 #include "util/rlimit.h"
@@ -120,6 +121,35 @@ namespace nlsat {
         */
         bool_var mk_root_atom(atom::kind k, var x, unsigned i, poly * p);
 
+        /**
+           \brief Register a transcendental function application (sin/cos/exp/atan)
+           to be refined directly by nlsat's own search loop; see
+           nlsat_transcendentals.h. Refinement is enabled automatically the
+           moment at least one such application is registered - there is no
+           separate on/off parameter.
+        */
+        void add_transcendental(transcendental_op_kind op, var arg, var val);
+
+        /**
+           \brief Register the nullary constant pi with the persistent
+           transcendentals engine (see nlsat_transcendentals.h::add_pi).
+        */
+        void add_pi(var val);
+
+        /**
+           \brief Register a binary atan2(y, x) application to be refined
+           directly by nlsat's own search loop (see
+           nlsat_transcendentals.h::add_atan2).
+        */
+        void add_atan2(var y, var x, var val);
+
+        /**
+           \brief True if at least one transcendental application has been
+           registered (see add_transcendental/add_pi/add_atan2), i.e. this
+           solver's own search loop refines them.
+        */
+        bool transcendentals_enabled() const;
+
         void inc_ref(bool_var b);
         void inc_ref(literal l) { inc_ref(l.var()); }
         void dec_ref(bool_var b);
@@ -132,6 +162,21 @@ namespace nlsat {
            \brief Create a new clause.
         */
         void mk_clause(unsigned num_lits, literal * lits, assumption a = nullptr);
+
+        /**
+           \brief Borrow the learned clauses and inspect their external assumption tags.
+           Clause pointers remain valid only until the next solver mutation.
+        */
+        ptr_vector<clause> const& get_lemmas() const;
+        void get_dependencies(clause const& c, vector<assumption, false>& deps) const;
+
+        /**
+           \brief Retract clauses depending on the non-null external scope_tag,
+           preserving independent learned clauses without rebuilding surviving atoms.
+           Keep at most max_lemmas learned clauses, preferring shorter clauses.
+           Requires an incremental solver. Invalidates the model and unsat core.
+        */
+        void retract(assumption scope_tag, unsigned max_lemmas = UINT_MAX);
 
         // -----------------------
         //
@@ -200,6 +245,27 @@ namespace nlsat {
         /**
            \brief reorder variables. 
          */
+        /**
+           \brief Optimization support: when x is the designated maximization
+           variable, the solver assigns x the largest value compatible with the
+           current infeasible intervals (instead of an arbitrary witness) and
+           does not reorder variables, so that x keeps its position in the
+           variable order. Use null_var to disable.
+        */
+        void set_max_var(var x);
+        /**
+           \brief Query right after check() returns l_true. If the feasible set
+           of the maximization variable is bounded above, set sup to its
+           supremum, set attained to true when the assigned value equals sup
+           (false when the supremum is open and the value lies below it), and
+           return true. Return false when the feasible set is unbounded above;
+           that is not a verdict on the problem, since clauses learned in later
+           rounds may still bound the variable. The answer is read from the
+           solver's infeasible-interval sets, so it goes stale after further
+           mk_clause or check calls.
+        */
+        bool max_var_sup(anum & sup, bool & attained) const;
+
         void reorder(unsigned sz, var const* permutation);
         void restore_order();
 
@@ -218,6 +284,21 @@ namespace nlsat {
         lbool check();
 
         lbool check(literal_vector& assumptions);
+
+        /**
+           \brief Decide whether feasible values of x approach bound from below,
+           or are unbounded above when bound is null.
+
+           Project satisfying regions onto x and cover them until a feasible
+           interval reaches the limit or no feasible values remain. A finite
+           limit need not be an upper bound of the original problem.
+
+           Requires an incremental solver with x == 0 and no active reordering.
+           Integer variables return l_undef. Resource exceptions propagate.
+           Temporary clauses are retracted on exit, including on cancellation;
+           the previous model and unsat core are invalidated.
+        */
+        lbool check_limit(var x, anum const* bound = nullptr);
 
         //
         // check satisfiability of asserted formulas relative to state of the nlsat solver.

@@ -30,19 +30,16 @@ add_custom_command(OUTPUT "${Z3_JAVA_NATIVE_JAVA}" "${Z3_JAVA_NATIVE_CPP}"
     "${PROJECT_SOURCE_DIR}/scripts/update_api.py"
     ${Z3_GENERATED_FILE_EXTRA_DEPENDENCIES}
   COMMENT "Generating \"${Z3_JAVA_NATIVE_JAVA}\" and \"${Z3_JAVA_NATIVE_CPP}\""
-  USES_TERMINAL
 )
 
 # Add rule to build native code that provides a bridge between
 # ``Native.java`` and libz3's interfac3.
 add_library(z3java SHARED ${Z3_JAVA_NATIVE_CPP})
-target_link_libraries(z3java PRIVATE libz3)
+target_link_libraries(z3java PRIVATE z3::libz3 z3_common)
 # FIXME:
 # Not sure if using all the flags used by the Z3 components is really necessary
 # here. The Python build system uses all the flags used for building
 # Z3's components to build ``Native.cpp`` lets do the same for now.
-target_compile_options(z3java PRIVATE ${Z3_COMPONENT_CXX_FLAGS})
-target_compile_definitions(z3java PRIVATE ${Z3_COMPONENT_CXX_DEFINES})
 target_include_directories(z3java PRIVATE
   "${PROJECT_SOURCE_DIR}/src/api"
   "${PROJECT_BINARY_DIR}/src/api"
@@ -57,6 +54,11 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     BUILD_RPATH "@loader_path"
   )
   target_link_options(z3java PRIVATE "-Wl,-headerpad_max_install_names")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set_target_properties(z3java PROPERTIES
+    INSTALL_RPATH "$ORIGIN"
+    BUILD_RPATH "$ORIGIN"
+  )
 endif()
 # FIXME: Should this library have SONAME and VERSION set?
 
@@ -96,7 +98,6 @@ add_custom_command(OUTPUT ${Z3_JAVA_ENUMERATION_PACKAGE_FILES_FULL_PATH}
     "${PROJECT_SOURCE_DIR}/scripts/mk_consts_files.py"
     ${Z3_GENERATED_FILE_EXTRA_DEPENDENCIES}
   COMMENT "Generating ${Z3_JAVA_PACKAGE_NAME}.enumerations package"
-  USES_TERMINAL
 )
 
 set(Z3_JAVA_JAR_SOURCE_FILES

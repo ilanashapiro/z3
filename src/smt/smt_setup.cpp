@@ -582,6 +582,7 @@ namespace smt {
         else {
             throw default_exception("invalid parameter for smt.string_solver, valid options are 'seq', 'auto'");
         }
+        // m_params.m_phase_selection = PS_ALWAYS_TRUE;
     }
 
     bool is_arith(static_features const & st) {
@@ -833,7 +834,7 @@ namespace smt {
             m_params.m_case_split_strategy == CS_RELEVANCY_GOAL)
             return;
 
-        if (st.m_has_bv && !st.m_has_fpa && st.m_num_quantifiers == 0)
+        if (st.m_has_bv && st.m_num_quantifiers == 0)
              m_params.m_relevancy_lvl = 0;           
     }
 
@@ -945,4 +946,3 @@ namespace smt {
     }
 
 }
-

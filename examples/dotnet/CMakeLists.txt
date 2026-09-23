@@ -6,19 +6,34 @@ else()
     set(Z3_DOTNET_PLATFORM "AnyCPU")
 endif()
 
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/dotnet.csproj dotnet.csproj COPYONLY)
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Program.cs Program.cs       COPYONLY)
+set(z3_dotnet_project "${CMAKE_CURRENT_BINARY_DIR}/dotnet.csproj")
+set(z3_dotnet_program "${CMAKE_CURRENT_BINARY_DIR}/Program.cs")
+add_custom_command(
+    OUTPUT "${z3_dotnet_project}" "${z3_dotnet_program}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/dotnet.csproj" "${z3_dotnet_project}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/Program.cs" "${z3_dotnet_program}"
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/dotnet.csproj"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Program.cs"
+    VERBATIM)
 
-ADD_DOTNET(${CMAKE_CURRENT_BINARY_DIR}/dotnet.csproj
+ADD_DOTNET("${z3_dotnet_project}"
     PLATFORM ${Z3_DOTNET_PLATFORM}
     NETCOREAPP
     CUSTOM_BUILDPROPS "<Z3_VERSION>${Z3_VERSION_MAJOR}.${Z3_VERSION_MINOR}.${Z3_VERSION_PATCH}</Z3_VERSION>"
-    DEPENDS Microsoft.Z3)
+    DEPENDS Microsoft.Z3
+    SOURCES "${z3_dotnet_project}" "${z3_dotnet_program}")
+
+# Its NuGet restore has no local package source wired up outside of a real
+# packaging flow, so don't build it by default.
+set_target_properties(BUILD_dotnet PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
 if(UNIX AND NOT APPLE)
     set(z3_dotnet_native_lib ${PROJECT_BINARY_DIR}/libz3.so)
     set(z3_dotnet_test_manual_copy_deps
-        ${PROJECT_BINARY_DIR}/Microsoft.Z3/netstandard2.0/Microsoft.Z3.dll 
+        ${PROJECT_BINARY_DIR}/Microsoft.Z3/netstandard2.0/Microsoft.Z3.dll
         ${z3_dotnet_native_lib}
         )
 
@@ -30,5 +45,5 @@ if(UNIX AND NOT APPLE)
         )
 
     add_dependencies(z3_dotnet_test_manual_copy_assembly_hack BUILD_dotnet)
+    set_target_properties(z3_dotnet_test_manual_copy_assembly_hack PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
-

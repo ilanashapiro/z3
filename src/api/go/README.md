@@ -32,20 +32,9 @@ The Go bindings provide a comprehensive interface to Z3's C API using CGO. The b
 - Z3 library built and installed
 - CGO enabled
 
-### With CMake
-
 ```bash
-mkdir build && cd build
-cmake -DBUILD_GO_BINDINGS=ON ..
-make
-```
-
-### With Python Build System
-
-```bash
-python scripts/mk_make.py --go
-cd build
-make
+cmake -S . -B build -DZ3_BUILD_GO_BINDINGS=ON
+cmake --build build --parallel
 ```
 
 ## Usage

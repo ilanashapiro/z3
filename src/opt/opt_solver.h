@@ -20,8 +20,7 @@ Notes:
 --*/
 #pragma once
 
-#include "util/inf_rational.h"
-#include "util/inf_eps_rational.h"
+#include "opt/opt_value.h"
 #include "ast/ast.h"
 #include "util/params.h"
 #include "solver/solver_na2as.h"
@@ -31,9 +30,15 @@ Notes:
 #include "smt/theory_opt.h"
 #include "ast/converters/generic_model_converter.h"
 
+class arith_util;
+
 namespace opt {
 
-    typedef inf_eps_rational<inf_rational> inf_eps;
+    // Extract from a model value of an objective term a rational bound on it:
+    // the value itself when it is a rational numeral, otherwise, for an
+    // irrational algebraic value (e.g. sqrt(2) for an objective pinned by
+    // x^2 = 2), the requested side of its isolating interval.
+    bool model_value_bound(arith_util& a, expr* val, bool lower, rational& n);
 
     // Adjust bound bound |-> m_offset + (m_negate?-1:1)*bound
     class adjust_value {
@@ -49,12 +54,15 @@ namespace opt {
         void set_negate(bool neg) { m_negate = neg; }
         rational const& get_offset() const { return m_offset; }
         void add_offset(rational const& o) { if (m_negate) m_offset -= o; else m_offset += o; }
-        bool get_negate() { return m_negate; }
+        bool get_negate() const { return m_negate; }
         inf_eps operator()(inf_eps const& r) const {
             inf_eps result = r;
             if (m_negate) result.neg();
             result += m_offset;
             return result;
+        }
+        objective_value operator()(objective_value const& r) const {
+            return r.adjusted(m_offset, m_negate);
         }
         rational operator()(rational const& r) const {
             rational result = r;
@@ -76,6 +84,8 @@ namespace opt {
         model_ref           m_model;
         svector<smt::theory_var>  m_objective_vars;
         vector<inf_eps>     m_objective_values;
+        inf_eps             m_last_hint;          // hint from the last maximize_objective call
+        lbool               m_last_hint_status = l_undef; // l_true: validated, l_false: refuted, l_undef: not decided
         sref_vector<model>  m_objective_models;
         expr_ref_vector     m_objective_terms;
         bool                m_dump_benchmarks;
@@ -170,6 +180,12 @@ namespace opt {
         bool maximize_objective_isolated(unsigned i, model_ref& baseline_model, expr_ref& blocker);
         void update_from_baseline_model(unsigned i, model_ref& baseline_model, expr_ref& blocker);
         inf_eps const & saved_objective_value(unsigned obj_index);
+        // The optimization hint of the last maximize_objective call and what
+        // check_bound established about it: l_true - a model attains it;
+        // l_false - no model satisfies obj >= hint, so it is a sound upper
+        // bound on the objective; l_undef - not decided (or no check made).
+        inf_eps const & last_hint() const { return m_last_hint; }
+        lbool last_hint_status() const { return m_last_hint_status; }
         inf_eps current_objective_value(unsigned obj_index);
         model* get_model_idx(unsigned obj_index) { return m_objective_models[obj_index]; }
 
@@ -192,9 +208,8 @@ namespace opt {
                                symbol const& logic = symbol::null, char const * status = "unknown", char const * attributes = "");
 
     private:
-        bool bound_value(unsigned i, inf_eps& val);
+        lbool bound_value(unsigned i, inf_eps& val);
         void set_model(unsigned i);
         lbool adjust_result(lbool r);
     };
 }
-

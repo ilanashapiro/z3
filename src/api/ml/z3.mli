@@ -2009,6 +2009,10 @@ sig
   (** length of a sequence *)
   val mk_seq_length : context -> Expr.expr -> Expr.expr
 
+  (** [mk_seq_power ctx s n] is [s] concatenated [n] times with itself,
+      it is the empty sequence when [n] is not positive *)
+  val mk_seq_power : context -> Expr.expr -> Expr.expr -> Expr.expr
+
   (** [mk_seq_nth ctx s index] retrieves from [s] the element at position [index].
       The function is under-specified if the index is out of bounds. *)
   val mk_seq_nth : context -> Expr.expr -> Expr.expr -> Expr.expr
@@ -2016,8 +2020,20 @@ sig
   (** index of the first occurrence of the second argument in the first *)
   val mk_seq_index : context -> Expr.expr -> Expr.expr -> Expr.expr -> Expr.expr
 
-  (** [mk_seq_last_index ctx s substr] occurence of [substr] in the sequence [s] *)
+  (** [mk_seq_last_index ctx s substr] occurrence of [substr] in the sequence [s] *)
   val mk_seq_last_index : context -> Expr.expr -> Expr.expr -> Expr.expr
+
+  (** Map a function over a sequence. *)
+  val mk_seq_map : context -> Expr.expr -> Expr.expr -> Expr.expr
+
+  (** Map an index-aware function over a sequence. *)
+  val mk_seq_mapi : context -> Expr.expr -> Expr.expr -> Expr.expr -> Expr.expr
+
+  (** Fold a function over a sequence from the left. *)
+  val mk_seq_foldl : context -> Expr.expr -> Expr.expr -> Expr.expr -> Expr.expr
+
+  (** Fold an index-aware function over a sequence from the left. *)
+  val mk_seq_foldli : context -> Expr.expr -> Expr.expr -> Expr.expr -> Expr.expr -> Expr.expr
 
   (** retrieve integer expression encoded in string *)
   val mk_str_to_int : context -> Expr.expr -> Expr.expr
@@ -3675,6 +3691,23 @@ sig
   val parse_file : fixedpoint -> string -> Expr.expr list
 end
 
+(** Quantifier elimination and model-based projection. *)
+module QE :
+sig
+  val qe_lite : context -> AST.ASTVector.ast_vector -> Expr.expr -> Expr.expr
+  val model_project : Model.model -> Expr.expr list -> Expr.expr -> Expr.expr
+  val model_project_skolem : Model.model -> Expr.expr list -> Expr.expr ->
+    AST.ASTMap.ast_map -> Expr.expr
+  val model_project_with_witness : Model.model -> Expr.expr list -> Expr.expr ->
+    AST.ASTMap.ast_map -> Expr.expr
+end
+
+(** Polynomial operations. *)
+module Polynomial :
+sig
+  val mk_polynomial_subresultants : context -> Expr.expr -> Expr.expr -> Expr.expr -> Expr.expr list
+end
+
 (** Optimization *)
 module Optimize :
 sig
@@ -3718,6 +3751,16 @@ sig
 
   (** Retrieve upper bound in current model for handle *)
   val get_upper : handle -> Expr.expr
+
+  (** Retrieve lower bound as [infinity coefficient, finite value, epsilon coefficient].
+      The finite value can be an exact algebraic number. An unattained limit
+      can have a nonzero epsilon coefficient even when the finite value is algebraic. *)
+  val get_lower_as_vector : handle -> Expr.expr list
+
+  (** Retrieve upper bound as [infinity coefficient, finite value, epsilon coefficient].
+      The finite value can be an exact algebraic number. An unattained limit
+      can have a nonzero epsilon coefficient even when the finite value is algebraic. *)
+  val get_upper_as_vector : handle -> Expr.expr list
 
   (** Creates a backtracking point. {!pop} *)
   val push : optimize -> unit

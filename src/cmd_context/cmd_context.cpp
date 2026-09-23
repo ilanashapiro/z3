@@ -405,7 +405,48 @@ bool cmd_context::builtin_signature_collides(symbol const& s, unsigned arity, so
     // basic theory) block a user declaration. Z3-specific extension constants
     // such as 'pi' and 'euler' are not SMT-LIB reserved symbols and may be
     // shadowed by user declarations, as was historically permitted.
-    return is_app(result) && to_app(result)->get_family_id() == m().get_basic_family_id();
+    if (arity == 0)
+        return is_app(result) && to_app(result)->get_family_id() == m().get_basic_family_id();
+    // A function/overload collision (arity > 0) is always rejected: the user
+    // declaration would clash with a built-in of the same argument sorts.
+    return true;
+}
+
+// Recognize a (declare-fun f (...) ...) whose signature matches a
+// Z3-specific transcendental extension function (sin, cos, exp, atan2, ...).
+// These are not part of any SMT-LIB theory; many existing benchmarks declare
+// them as ordinary uninterpreted functions for the benefit of solvers without
+// native support. Rather than reporting a hard error (like a genuine builtin
+// collision, e.g. re-declaring '+') or silently registering a *new*
+// uninterpreted function that would shadow (and hide the semantics of) the
+// builtin, we treat such a declaration as a no-op: later references to the
+// symbol still resolve to the real builtin.
+bool cmd_context::is_transcendental_shadow_decl(symbol const& s, unsigned arity, sort* const* domain) const {
+    if (arity == 0)
+        return false;
+    expr_ref_vector args(m());
+    for (unsigned i = 0; i < arity; ++i)
+        args.push_back(m().mk_var(i, domain[i]));
+    expr_ref result(m());
+    try {
+        if (!try_mk_builtin_app(s, arity, args.data(), 0, nullptr, nullptr, result))
+            return false;
+    }
+    catch (ast_exception&) {
+        return false;
+    }
+    if (!is_app(result) || to_app(result)->get_family_id() != m().get_family_id("arith"))
+        return false;
+    switch (to_app(result)->get_decl_kind()) {
+    case OP_SIN: case OP_COS: case OP_TAN:
+    case OP_ASIN: case OP_ACOS: case OP_ATAN:
+    case OP_SINH: case OP_COSH: case OP_TANH:
+    case OP_ASINH: case OP_ACOSH: case OP_ATANH:
+    case OP_EXP: case OP_ATAN2: case OP_LOG:
+        return true;
+    default:
+        return false;
+    }
 }
 
 bool cmd_context::contains_macro(symbol const& s) const {
@@ -967,6 +1008,16 @@ bool cmd_context::is_func_decl(symbol const & s) const {
 }
 
 void cmd_context::insert(symbol const & s, func_decl * f) {
+    // A transcendental shadow declaration (e.g. MathSAT-style `(declare-fun
+    // sin (Real) Real)`) must be recognized as a no-op *before*
+    // m_check_logic runs: under a restrictive logic (e.g. QF_NRA, QF_NTA)
+    // that disallows uninterpreted functions, m_check_logic would otherwise
+    // reject the shadow declaration with "logic does not support
+    // uninterpreted functions" before this shadow-decl check ever gets a
+    // chance to treat it as a no-op.
+    if (builtin_signature_collides(s, f->get_arity(), f->get_domain()) &&
+        is_transcendental_shadow_decl(s, f->get_arity(), f->get_domain()))
+        return;
     if (!m_check_logic(f)) {
         throw cmd_exception(m_check_logic.get_last_error());
     }
@@ -1363,6 +1414,15 @@ bool cmd_context::try_mk_pdecl_app(symbol const & s, unsigned num_args, expr * c
     };
     datatype::util dt(m());
     func_decl_ref fn(m());
+    if (s == symbol("is") && num_args == 1 && num_indices == 1 && indices[0].is_symbol() && dt.is_datatype(args[0]->get_sort())) {
+        for (func_decl* c : *dt.get_datatype_constructors(args[0]->get_sort())) {
+            if (c->get_name() == indices[0].get_symbol()) {
+                r = dt.mk_is(c, args[0]);
+                return true;
+            }
+        }
+        throw cmd_exception("invalid datatype recognizer, unknown constructor ", indices[0].get_symbol());
+    }
     for (auto* c : dt.plugin().get_constructors(s)) {
         if (c->accessors().size() != num_args)
             continue;
@@ -1409,9 +1469,11 @@ void cmd_context::mk_app(symbol const & s, unsigned num_args, expr * const * arg
         return;
     if (try_mk_declared_app(s, num_args, args, num_indices, indices, range, result))
         return;   
+    if (!range && s == symbol("is") && try_mk_pdecl_app(s, num_args, args, num_indices, indices, result))
+        return;
     if (try_mk_builtin_app(s, num_args, args, num_indices, indices, range, result)) 
         return;
-    if (!range && try_mk_pdecl_app(s, num_args, args, num_indices, indices, result))
+    if (!range && s != symbol("is") && try_mk_pdecl_app(s, num_args, args, num_indices, indices, result))
         return;
     
     func_decls fs;

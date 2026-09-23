@@ -35,6 +35,9 @@ core::core(lp::lar_solver& s, params_ref const& p, reslimit & lim) :
     m_divisions(*this),
     m_intervals(this, lim),
     m_monomial_bounds(this),
+    m_patcher(this),
+    m_explanations(this),
+    m_transcendentals(*this),
     m_horner(this),
     m_grobner(this),
     m_emons(m_evars),
@@ -42,7 +45,7 @@ core::core(lp::lar_solver& s, params_ref const& p, reslimit & lim) :
     m_nra(s, m_nra_lim, *this, p),
     m_throttle(lra.trail(), 
 	lra.settings().stats()) {
-     m_nlsat_delay_bound = lp_settings().nlsat_delay();
+     m_nlsat_backoff.set_delay_bound(lp_settings().nlsat_delay());
      lra.m_find_monics_with_changed_bounds_func = [&](const indexed_uint_set& columns_with_changed_bounds) {
         for (lpvar j : columns_with_changed_bounds) {
             if (is_monic_var(j))
@@ -176,158 +179,6 @@ bool core::check_monic(const monic& m) const {
 }
     
 
-bool core::explain_upper_bound(const lp::lar_term& t, const rational& rs, lp::explanation& e) const {
-    rational b(0); // the bound
-    for (lp::lar_term::ival p : t) {
-        rational pb;
-        if (explain_coeff_upper_bound(p, pb, e)) {
-            b += pb;
-        } else {
-            e.clear();
-            return false;
-        }
-    }
-    if (b > rs ) {
-        e.clear();
-        return false;
-    }
-    return true;
-}
-bool core::explain_lower_bound(const lp::lar_term& t, const rational& rs, lp::explanation& e) const {
-    rational b(0); // the bound
-    for (lp::lar_term::ival p : t) {
-        rational pb;
-        if (explain_coeff_lower_bound(p, pb, e)) {
-            b += pb;
-        } else {
-            e.clear();
-            return false;
-        }
-    }
-    if (b < rs ) {
-        e.clear();
-        return false;
-    }
-    return true;
-}
-
-bool core::explain_coeff_lower_bound(const lp::lar_term::ival& p, rational& bound, lp::explanation& e) const {
-    const rational& a = p.coeff();
-    SASSERT(!a.is_zero());
-    if (a.is_pos()) {
-        auto* dep = lra.get_column_lower_bound_witness(p.j());
-        if (!dep)
-            return false;
-        bound = a * lra.get_lower_bound(p.j()).x;
-        lra.push_explanation(dep, e);
-        return true;
-    }
-    // a.is_neg()
-    auto* dep = lra.get_column_upper_bound_witness(p.j());
-    if (!dep)
-        return false;
-    bound = a * lra.get_upper_bound(p.j()).x;
-    lra.push_explanation(dep, e);
-    return true;
-}
-
-bool core::explain_coeff_upper_bound(const lp::lar_term::ival& p, rational& bound, lp::explanation& e) const {
-    const rational& a = p.coeff();
-    lpvar j = p.j();
-    SASSERT(!a.is_zero());
-    if (a.is_neg()) {
-        auto *dep = lra.get_column_lower_bound_witness(j);
-        if (!dep)
-            return false;
-        bound = a * lra.get_lower_bound(j).x;
-        lra.push_explanation(dep, e);
-        return true;
-    }
-    // a.is_pos()
-    auto* dep = lra.get_column_upper_bound_witness(j);
-    if (!dep)
-        return false;
-    bound = a * lra.get_upper_bound(j).x;
-    lra.push_explanation(dep, e);
-    return true;
-}
-    
-// return true iff the negation of the ineq can be derived from the constraints
-bool core::explain_ineq(lemma_builder& lemma, const lp::lar_term& t, llc cmp, const rational& rs) {
-    // check that we have something like 0 < 0, which is always false and can be safely
-    // removed from the lemma
-        
-    if (t.is_empty() && rs.is_zero() &&
-        (cmp == llc::LT || cmp == llc::GT || cmp == llc::NE)) return true;
-    lp::explanation exp;
-    bool r;
-    switch (negate(cmp)) {
-    case llc::LE:
-        r = explain_upper_bound(t, rs, exp);
-        break;
-    case llc::LT:
-        r = explain_upper_bound(t, rs - rational(1), exp);
-        break;
-    case llc::GE: 
-        r = explain_lower_bound(t, rs, exp);
-        break;
-    case llc::GT:
-        r = explain_lower_bound(t, rs + rational(1), exp);
-        break;
-
-    case llc::EQ:
-        r = (explain_lower_bound(t, rs, exp) && explain_upper_bound(t, rs, exp)) ||
-            (rs.is_zero() && explain_by_equiv(t, exp));
-        break;
-    case llc::NE:
-        // TBD - NB: does this work for Reals?
-        r = explain_lower_bound(t, rs + rational(1), exp) || explain_upper_bound(t, rs - rational(1), exp);           
-        break;
-    }
-    if (r) {
-        lemma &= exp;
-        return true;
-    }
-        
-    return false;
-}
-
-/**
- * \brief
- if t is an octagon term -+x -+ y try to explain why the term always is
- equal zero
-*/
-bool core::explain_by_equiv(const lp::lar_term& t, lp::explanation& e) const {
-    lpvar i,j;
-    bool sign;
-    if (!is_octagon_term(t, sign, i, j))
-        return false;
-    if (m_evars.find(signed_var(i, false)) != m_evars.find(signed_var(j, sign)))
-        return false;
-            
-    m_evars.explain(signed_var(i, false), signed_var(j, sign), e);
-    TRACE(nla_solver, tout << "explained :"; lra.print_term_as_indices(t, tout););
-    return true;            
-}
-
-void core::mk_ineq_no_expl_check(lemma_builder& lemma, lp::lar_term& t, llc cmp, const rational& rs) {
-    TRACE(nla_solver_details, lra.print_term_as_indices(t, tout << "t = "););
-    lemma |= ineq(cmp, t, rs);
-    CTRACE(nla_solver, ineq_holds(ineq(cmp, t, rs)), print_ineq(ineq(cmp, t, rs), tout) << "\n";);
-    SASSERT(!ineq_holds(ineq(cmp, t, rs)));
-}
-
-llc apply_minus(llc cmp) {
-    switch(cmp) {
-    case llc::LE: return llc::GE;
-    case llc::LT: return llc::GT;
-    case llc::GE: return llc::LE;
-    case llc::GT: return llc::LT;
-    default: break;
-    }
-    return cmp;
-}   
-    
 // the monics should be equal by modulo sign but this is not so in the model
 void core::fill_explanation_and_lemma_sign(lemma_builder& lemma, const monic& a, const monic & b, rational const& sign) {
     SASSERT(sign == 1 || sign == -1);
@@ -510,94 +361,6 @@ const lp::lp_settings& core::lp_settings() const {
 unsigned core::random() { return lp_settings().random_next(); }
     
 
-// we look for octagon constraints here, with a left part  +-x +- y 
-void core::collect_equivs() {
-    const lp::lar_solver& s = lra;
-
-    for (const auto * t : s.terms()) {
-        if (!s.column_associated_with_row(t->j()))
-            continue;
-        lpvar j = t->j();
-        if (var_is_fixed_to_zero(j)) {
-            TRACE(nla_solver_mons, s.print_term_as_indices(*t, tout << "term = ") << "\n";);
-            add_equivalence_maybe(t, s.get_column_upper_bound_witness(j), s.get_column_lower_bound_witness(j));
-        }
-    }
-    m_emons.ensure_canonized();
-}
-
-
-// returns true iff the term is in a form +-x-+y.
-// the sign is true iff the term is x+y, -x-y.
-bool core::is_octagon_term(const lp::lar_term& t, bool & sign, lpvar& i, lpvar &j) const {
-    if (t.size() != 2)
-        return false;
-    bool seen_minus = false;
-    bool seen_plus = false;
-    i = null_lpvar;
-    j = null_lpvar;
-    for(lp::lar_term::ival p : t) {
-        const auto & c = p.coeff();
-        if (c == 1) {
-            seen_plus = true;
-        } else if (c == - 1) {
-            seen_minus = true;
-        } else {
-            return false;
-        }
-        if (i == null_lpvar)
-            i = p.j();
-        else
-            j = p.j();
-    }
-    SASSERT(j != null_lpvar);
-    sign = (seen_minus && seen_plus)? false : true;
-    return true;
-}
-    
-void core::add_equivalence_maybe(const lp::lar_term* t, u_dependency* c0, u_dependency* c1) {
-    bool sign;
-    lpvar i, j;
-    if (!is_octagon_term(*t, sign, i, j))
-        return;
-    if (sign)
-        m_evars.merge_minus(i, j, eq_justification({c0, c1}));
-    else 
-        m_evars.merge_plus(i, j, eq_justification({c0, c1}));
-}
-
-// x is equivalent to y if x = +- y
-void core::init_vars_equivalence() {
-    collect_equivs();
-    //    SASSERT(tables_are_ok());
-}
-
-bool core::vars_table_is_ok() const {
-    // return m_var_eqs.is_ok();
-    return true;
-}
-
-bool core::rm_table_is_ok() const {
-    // return m_emons.is_ok();
-    return true;
-}
-    
-bool core::tables_are_ok() const {
-    return vars_table_is_ok() && rm_table_is_ok();
-}
-    
-bool core::var_is_a_root(lpvar j) const { return m_evars.is_root(j); }
-
-template <typename T>
-bool core::vars_are_roots(const T& v) const {
-    for (lpvar j: v) {
-        if (!var_is_a_root(j))
-            return false;
-    }
-    return true;
-}
-
-
 void core::clear() {
     m_lemmas.clear();
     m_literals.clear();
@@ -611,7 +374,7 @@ void core::init_search() {
     TRACE(nla_solver_mons, tout << "init\n";);
     SASSERT(m_emons.invariant());
     clear();
-    init_vars_equivalence();
+    m_explanations.init_vars_equivalence();
     SASSERT(m_emons.invariant());
     SASSERT(elists_are_consistent(false));
 }
@@ -793,6 +556,8 @@ bool core::rm_check(const monic& rm) const {
 }
 
 bool core::has_relevant_monomial() const {
+    if (!m_transcendentals.empty())
+        return true;
     return any_of(emons(), [&](auto const& m) { return is_relevant(m.var()); });
 }
     
@@ -854,7 +619,7 @@ lemma_builder::lemma_builder(core& c, const char* name):name(name), c(c) {
 }
 
 lemma_builder& lemma_builder::operator|=(ineq const& ineq) {
-    if (!c.explain_ineq(*this, ineq.term(), ineq.cmp(), ineq.rs())) {
+    if (!c.m_explanations.explain_ineq(*this, ineq.term(), ineq.cmp(), ineq.rs())) {
         CTRACE(nla_solver, c.ineq_holds(ineq), c.print_ineq(ineq, tout) << "\n";);
         SASSERT(c.m_use_nra_model || !c.ineq_holds(ineq));
         current().push_back(ineq);
@@ -1029,54 +794,6 @@ bool core::elists_are_consistent(bool check_in_model) const {
     return true;
 }
 
-bool core::var_breaks_correct_monic_as_factor(lpvar j, const monic& m) const {
-    if (!val(var(m)).is_zero())
-        return true;
-    
-    if (!val(j).is_zero()) // j was not zero: the new value does not matter - m must have another zero factor
-        return false;
-    // do we have another zero in m?       
-    for (lpvar k : m) {
-        if (k != j && val(k).is_zero()) {
-            return false; // not breaking
-        }
-    }
-    // j was the only zero in m
-    return true;
-}
-
-bool core::var_breaks_correct_monic(lpvar j) const {
-    if (is_monic_var(j) && !m_to_refine.contains(j)) {
-        TRACE(nla_solver, tout << "j = " << j << ", m  = "; print_monic(emon(j), tout) << "\n";);
-        return true; // changing the value of a correct monic
-    }
-    
-    for (const monic & m : emons().get_use_list(j)) {
-        if (m_to_refine.contains(m.var()))
-            continue;
-        if (var_breaks_correct_monic_as_factor(j, m))
-            return true;
-    }            
-
-    return false;
-}
-
-void core::update_to_refine_of_var(lpvar j) {
-    for (const monic & m : emons().get_use_list(j)) {
-        if (var_val(m) == mul_val(m)) 
-            erase_from_to_refine(var(m));
-        else
-            insert_to_refine(var(m));
-    }
-    if (is_monic_var(j)) {
-        const monic& m = emon(j);
-        if (var_val(m) == mul_val(m))
-            erase_from_to_refine(j);
-        else
-            insert_to_refine(j);        
-    }
-}
-
 bool core::var_is_big(lpvar j) const {
     return !var_is_int(j) && val(j).is_big();
 }
@@ -1106,135 +823,6 @@ bool core::has_real(const monic& m) const {
     return false;
 }
 
-// returns true if the patching is blocking
-bool core::is_patch_blocked(lpvar u, const lp::impq& ival) const {
-    TRACE(nla_solver, tout << "u = " << u << '\n';);
-    if (m_cautious_patching &&
-        (!lra.inside_bounds(u, ival) || (var_is_int(u) && ival.is_int() == false))) {
-        TRACE(nla_solver, tout << "u = " << u << " blocked, for feas or integr\n";);
-        return true; // block
-    }
-
-    if (u == m_patched_var) {
-        TRACE(nla_solver, tout << "u == m_patched_var, no block\n";);
-        
-        return false; // do not block
-    }
-    // we can change only one variable in variables of m_patched_var
-    if (m_patched_monic->contains_var(u) || u == var(*m_patched_monic)) {
-        TRACE(nla_solver, tout << "u = " << u << " blocked as contained\n";);
-        return true; // block
-    }
-    
-    if (var_breaks_correct_monic(u)) {
-        TRACE(nla_solver, tout << "u = " << u << " blocked as used in a correct monomial\n";);
-        return true;
-    }
-    
-    TRACE(nla_solver, tout << "u = " << u << ", m_patched_m  = "; print_monic(*m_patched_monic, tout) <<
-          ", not blocked\n";);
-    
-    return false;
-}
-
-// it tries to patch m_patched_var
-bool core::try_to_patch(const rational& v) {
-    auto is_blocked = [this](lpvar u, const lp::impq& iv)  { return is_patch_blocked(u, iv); };
-    auto change_report = [this](lpvar u) { update_to_refine_of_var(u); };
-    return lra.try_to_patch(m_patched_var, v, is_blocked, change_report);
-}
-
-bool in_power(const svector<lpvar>& vs, unsigned l) {
-    unsigned k = vs[l];
-    return (l != 0 && vs[l - 1] == k) || (l + 1 < vs.size() && k == vs[l + 1]);
-}
-
-bool core::to_refine_is_correct() const {
-    for (unsigned j = 0; j < lra.number_of_vars(); ++j) {
-        if (!is_monic_var(j)) continue;
-        bool valid = check_monic(emon(j));
-        if (valid == m_to_refine.contains(j)) {
-            TRACE(nla_solver, tout << "inconstency in m_to_refine : ";
-                  print_monic(emon(j), tout) << "\n";
-                  if (valid) tout << "should NOT be in to_refine\n";
-                  else tout << "should be in to_refine\n";);
-            return false;
-        }
-    }
-    return true;
-}
-
-void core::patch_monomial(lpvar j) {    
-    m_patched_monic =& (emon(j));
-    m_patched_var = j;
-    TRACE(nla_solver, tout << "m = "; print_monic(*m_patched_monic, tout) << "\n";);
-    rational v = mul_val(*m_patched_monic);
-    if (val(j) == v) {
-        erase_from_to_refine(j);
-        return;
-    }
-    if (!var_breaks_correct_monic(j) && try_to_patch(v)) {
-        SASSERT(to_refine_is_correct());        
-        return;
-    }
-  
-    // We could not patch j, now we try patching the factor variables.
-    TRACE(nla_solver, tout << " trying squares\n";);
-    // handle perfect squares
-    if ((*m_patched_monic).vars().size() == 2 && (*m_patched_monic).vars()[0] == (*m_patched_monic).vars()[1]) {        
-        rational root;
-        if (v.is_perfect_square(root)) {
-            m_patched_var = (*m_patched_monic).vars()[0];
-            if (!var_breaks_correct_monic(m_patched_var) && (try_to_patch(root) || try_to_patch(-root))) { 
-                TRACE(nla_solver, tout << "patched square\n";);
-                return;
-            }
-        }
-        TRACE(nla_solver, tout << " cannot patch\n";);
-        return;
-    }
-
-    // We have v != abc, but we need to have v = abc.
-    // If we patch b then b should be equal to v/ac = v/(abc/b) = b(v/abc)
-    if (!v.is_zero()) {
-        rational r = val(j) / v;
-        SASSERT((*m_patched_monic).is_sorted());
-        TRACE(nla_solver, tout << "r = " << r << ", v = " << v << "\n";);
-        for (unsigned l = 0; l < (*m_patched_monic).size(); ++l) {
-            m_patched_var = (*m_patched_monic).vars()[l];
-            if (!in_power((*m_patched_monic).vars(), l) &&
-                !var_breaks_correct_monic(m_patched_var) &&
-                try_to_patch(r * val(m_patched_var))) { // r * val(k) gives the right value of k
-                TRACE(nla_solver, tout << "patched  " << m_patched_var << "\n";);
-                SASSERT(mul_val((*m_patched_monic)) == val(j));
-                erase_from_to_refine(j);
-                break;
-            }
-        }
-    }
-}
-
-void core::patch_monomials_on_to_refine() {
-    // the rest of the function might change m_to_refine, so have to copy
-    unsigned_vector to_refine;
-    for (unsigned j : m_to_refine) 
-        to_refine.push_back(j);
-    
-    unsigned sz = to_refine.size();
-
-    unsigned start = random();
-    for (unsigned i = 0; i < sz && !m_to_refine.empty(); ++i) 
-        patch_monomial(to_refine[(start + i) % sz]);
-
-    TRACE(nla_solver, tout << "sz = " << sz << ", m_to_refine = " << m_to_refine.size() <<
-          (sz > m_to_refine.size()? " less" : " same" ) << "\n";);
-}
-
-void core::patch_monomials() {
-    m_cautious_patching = true;
-    patch_monomials_on_to_refine();
-}
-
 /**
  * Cycle through different end-game solvers weighted by probability.
  */
@@ -1261,6 +849,10 @@ void core::check_weighted(unsigned sz, std::pair<unsigned, std::function<void(vo
 
 lbool core::check_power(lpvar r, lpvar x, lpvar y) {
     clear();
+    // powers::check and lemma validation read only the rational parts of the
+    // column values; drop infinitesimals first, as init_to_refine does for check().
+    if (lra.is_feasible())
+        lra.get_rid_of_inf_eps();
     return m_powers.check(r, x, y, m_lemmas);
 }
 
@@ -1289,6 +881,81 @@ void core::add_bounds() {
     }    
 }
 
+// Called whenever the rest of the pipeline is about to report the state as
+// satisfied (l_true) purely on the strength of the polynomial/monomial
+// reasoning, i.e. before m_to_refine/m_nla_satisfied are trusted as a full
+// answer. Registered transcendental function applications (sin/cos/etc.)
+// are not monomials and are not accounted for by that reasoning, so they
+// still need a delta-consistency check against the current assignment.
+lbool core::check_transcendentals_and_finish() {
+    if (m_transcendentals.empty())
+        return l_true;
+    m_transcendentals.check();
+    if (!m_lemmas.empty() || !m_literals.empty())
+        return l_false;
+    // The delta-check alone can nudge the LP assignment indefinitely
+    // without ever producing a certificate. Each failed delta-check
+    // bumps the affected application's accumulated Taylor degree
+    // (nla_transcendentals.h), so periodically hand the problem to
+    // nlsat with those (permanent, necessary-condition) axioms:
+    // l_false is a sound proof of infeasibility on its own (the
+    // axioms are necessary conditions on val). l_true is only
+    // trusted once nla_transcendentals::check_nra_model certifies,
+    // using the actual algebraic witness, that every axiom is tight
+    // enough at that witness to accept as a model; this extra gate
+    // is applied here (rather than inside nra_solver itself) so it
+    // does not affect nra_solver's other, already-tuned call sites
+    // for problems that do have monomials to refine.
+    if (should_run_bounded_nlsat() && m_transcendentals.has_observed_failure()) {
+        lbool ret = bounded_nlsat();
+        if (ret == l_false)
+            return l_false;
+        if (ret == l_true) {
+            if (m_transcendentals.check_nra_model())
+                return l_true;
+            // Not tight enough to certify: don't report the
+            // nlsat witness as a model; fall back to the plain
+            // (pre-nlsat) assignment that already passed the
+            // delta-check above, undoing bounded_nlsat's model
+            // flag so the rest of the solver keeps reading the
+            // ordinary LP assignment.
+            set_use_nra_model(false);
+        }
+        else {
+            // bounded_nlsat gave up (resource limit) rather than
+            // certifying l_true or refuting with l_false. The plain
+            // delta-check above only guarantees the witness is within
+            // a small floating point tolerance of the true
+            // transcendental value; for problems whose true answer
+            // hinges on a margin finer than that tolerance (the exact
+            // reason bounded_nlsat was invoked to begin with), trusting
+            // it here would silently launder an unresolved case into a
+            // (potentially unsound) "sat". Report unknown instead.
+            return l_undef;
+        }
+    }
+    return l_true;
+}
+
+// True iff the current (rational) assignment satisfies both the registered
+// monomials and, if any are registered, the transcendental function
+// applications. See the declaration in nla_core.h for details.
+bool core::is_nla_context_satisfied() {
+    init_to_refine();
+    if (!m_to_refine.empty())
+        return false;
+    return check_transcendentals_and_finish() == l_true;
+}
+
+// See the declaration in nla_core.h.
+lbool core::on_to_refine_empty() {
+    m_squeeze_schedule.on_nothing_to_refine();
+    // Even without nonlinear monomials to refine, registered transcendental
+    // function applications (sin/cos/etc.) still need a delta-consistency
+    // check against the current assignment before reporting l_true.
+    return check_transcendentals_and_finish();
+}
+
 lbool core::check(unsigned level) {
     lp_settings().stats().m_nla_calls++;
     TRACE(nla_solver, tout << "calls = " << lp_settings().stats().m_nla_calls << "\n";);
@@ -1300,10 +967,11 @@ lbool core::check(unsigned level) {
     }
 
     init_to_refine();
-    patch_monomials();
-    set_use_nra_model(false);    
+    m_patcher.patch_monomials();
+    set_use_nra_model(false);
     if (m_to_refine.empty())
-        return l_true;    
+        return on_to_refine_empty();
+
     init_search();
     m_nla_satisfied = false;
 
@@ -1319,8 +987,16 @@ lbool core::check(unsigned level) {
 
     if (no_effect() && refine_pseudo_linear())
         return l_false;
-       
-    
+
+    // Squeeze monomial bounds eagerly while it helps, otherwise on the horner
+    // cadence; disable after too many fruitless calls.
+    bool squeeze_cadence = lp_settings().stats().m_nla_calls % params().arith_nl_horner_frequency() == 0;
+    if (no_effect() && m_squeeze_schedule.enabled() && (run_horner || run_grobner) && (m_squeeze_schedule.eager() || squeeze_cadence)) {
+        m_squeeze_schedule.on_squeeze(m_monomial_bounds.optimize_nl_bounds());
+        if (m_to_refine.empty())
+            return on_to_refine_empty();
+    }
+
     {
         std::function<void(void)> check1 = [&]() { if (no_effect() && run_horner) m_horner.horner_lemmas(); };
         std::function<void(void)> check2 = [&]() { if (no_effect() && run_grobner) m_grobner(); };
@@ -1336,10 +1012,14 @@ lbool core::check(unsigned level) {
             return l_undef;
         if (!m_lemmas.empty() || !m_literals.empty() || m_check_feasible)
             return l_false;
-        // bound optimization proved all monomials consistent: goal satisfied.
+        // bound optimization proved all monomials consistent: goal satisfied,
+        // modulo any registered transcendentals also being consistent.
         if (m_nla_satisfied)
-            return l_true;
+            return check_transcendentals_and_finish();
     }
+
+    if (no_effect() && !m_transcendentals.empty())
+        m_transcendentals.check();
 
     if (no_effect() && params().arith_nl_nra_check_assignment() && m_check_assignment_fail_cnt < params().arith_nl_nra_check_assignment_max_fail()) {
         scoped_limits sl(m_reslim);
@@ -1349,7 +1029,7 @@ lbool core::check(unsigned level) {
             ++m_check_assignment_fail_cnt;
     }
 
-    if (no_effect() && should_run_bounded_nlsat()) 
+    if (no_effect() && should_run_bounded_nlsat())
         ret = bounded_nlsat();
                 
     if (no_effect()) 
@@ -1377,7 +1057,7 @@ lbool core::check(unsigned level) {
         check_weighted(3, checks);
 
         unsigned num_calls = lp_settings().stats().m_nla_calls;
-        if (!conflict_found() && params().arith_nl_nra() && num_calls % 50 == 0 && num_calls > 500) 
+        if (!conflict_found() && params().arith_nl_nra() && num_calls % 50 == 0 && num_calls > 500)
             ret = bounded_nlsat();
     }
 
@@ -1405,35 +1085,50 @@ lbool core::check(unsigned level) {
 }
 
 bool core::should_run_bounded_nlsat() {
-    if (!params().arith_nl_nra())
-        return false;
-    if (m_nlsat_delay > 0) 
-        --m_nlsat_delay;
-    return m_nlsat_delay < 2;
+    return params().arith_nl_nra() && m_nlsat_backoff.should_run();
 }
 
+// One budget-limited run of the nlsat solver on the full set of nonlinear
+// constraints. nlsat is complete for nonlinear real arithmetic but can be
+// arbitrarily expensive, so the run is capped by a conflict and an rlimit
+// budget. l_true: nlsat found a model, the state is satisfiable; l_false:
+// nlsat proved infeasibility and produced a lemma; l_undef: nlsat exhausted
+// its budget without an answer.
 lbool core::bounded_nlsat() {
+    const unsigned max_conflicts_budget = 100;
+    const unsigned rlimit_budget = 100000;
     params_ref p;
     lbool ret;
-    p.set_uint("max_conflicts", 100);
+    p.set_uint("max_conflicts", max_conflicts_budget);
     m_nra.updt_params(p);
+    uint64_t rlimit_consumed = 0;
     {
         scoped_limits sl(m_reslim);
-        sl.push_child(&m_nra_lim);
-        scoped_rlimit sr(m_nra_lim, 100000);
+        sl.push_child(&m_nra_lim); // zeroes m_nra_lim's counter
+        scoped_rlimit sr(m_nra_lim, rlimit_budget);
         ret = m_nra.check();
+        // must be read here: pop_child transfers the child's count to the
+        // parent and zeroes it, so outside this block the counter is 0 again
+        rlimit_consumed = m_nra_lim.count();
     }
-    p.set_uint("max_conflicts", lp_settings().m_max_conflicts);            
+    p.set_uint("max_conflicts", lp_settings().m_max_conflicts);
     m_nra.updt_params(p);
     lp_settings().stats().m_nra_calls++;
-    if (ret == l_undef) 
-        ++m_nlsat_delay_bound;
-    else if (m_nlsat_delay_bound > 0)
-        m_nlsat_delay_bound /= 2;        
-    
-    m_nlsat_delay = m_nlsat_delay_bound;
 
-    if (ret == l_true) 
+    // A conflict, or a run that consumed almost none of its budget,
+    // re-engages the backoff scheduler; only an expensive run that gave up
+    // backs off. A search that needs a cheap satisfiability certificate
+    // every round to advance (e.g. between quantifier instantiation rounds)
+    // must not be starved of them.
+    bool cheap = rlimit_consumed < rlimit_budget / 10;
+    bool re_engage = ret == l_false || cheap;
+    m_nlsat_backoff.update(re_engage);
+
+    IF_VERBOSE(3, verbose_stream() << "(nla-bounded-nlsat :result " << ret
+               << " :rlimit-consumed " << rlimit_consumed
+               << " :re-engage " << (re_engage ? "true" : "false") << ")\n");
+
+    if (ret == l_true)
         clear();
     return ret;
 }
@@ -1530,12 +1225,17 @@ void core::set_use_nra_model(bool m) {
     }
 }
 
+void core::nra_model_bound(lpvar v, rational& lo, rational& hi, unsigned precision) {
+    nlsat::anum const& w = m_nra.value(v);
+    auto& am = m_nra.am();
+    am.get_lower(w, lo, precision);
+    am.get_upper(w, hi, precision);
+}
+
     
 bool core::propagate() {
     clear();
 	bool propagated = false;
-    if (m_monomial_bounds.propagate_fixed_rows())
-        propagated = true;
     if (m_monomial_bounds.tighten_lp_bounds())
 		propagated = true;
     if (m_monomial_bounds.propagate_changed_bounds())

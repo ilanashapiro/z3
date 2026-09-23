@@ -13,7 +13,15 @@ z3_add_component(tactic
     model
     simplifiers
     converters
-  TACTIC_HEADERS
-    probe.h
-    tactic.h
 )
+
+add_subdirectory(aig)
+add_subdirectory(arith)
+add_subdirectory(bv)
+add_subdirectory(core)
+add_subdirectory(fd_solver)
+add_subdirectory(fpa)
+add_subdirectory(portfolio)
+add_subdirectory(sls)
+add_subdirectory(smtlogics)
+add_subdirectory(ufbv)

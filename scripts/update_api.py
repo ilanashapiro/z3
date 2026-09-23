@@ -22,7 +22,7 @@ import re
 import os
 import sys
 
-VERBOSE = True
+VERBOSE = False
 def is_verbose():
     return VERBOSE
 
@@ -30,7 +30,7 @@ def is_verbose():
 # TODO: rewrite this file without using global variables.
 # This file is a big HACK.
 # It started as small simple script.
-# Now, it is too big, and is invoked from mk_make.py
+# Now, it is too big, and is invoked from CMake
 #
 ##########################################################
 
@@ -2060,7 +2060,6 @@ def generate_files(api_files,
       return open(os.path.join(output_dir, file_name), mode)
     else:
       # Return a file that we can write to without caring
-      print("Faking emission of '{}'".format(file_name))
       import tempfile
       return tempfile.TemporaryFile(mode=mode)
 
@@ -2086,7 +2085,8 @@ def generate_files(api_files,
             print("Generated '{}'".format(log_h.name))
             print("Generated '{}'".format(log_c.name))
             print("Generated '{}'".format(exe_c.name))
-            print("Generated '{}'".format(core_py.name))
+            if z3py_output_dir:
+              print("Generated '{}'".format(core_py.name))
 
   if dotnet_output_dir:
     with open(os.path.join(dotnet_output_dir, 'Native.cs'), 'w') as dotnet_file:

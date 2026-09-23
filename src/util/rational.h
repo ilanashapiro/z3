@@ -19,6 +19,7 @@ Revision History:
 #pragma once
 
 #include "util/mpq.h"
+#include "util/memory_manager.h"
 
 class rational {
     mpq   m_val;
@@ -37,19 +38,16 @@ class rational {
 public:
     static void initialize();
     static void finalize();
-    /*
-      ADD_INITIALIZER('rational::initialize();')
-      ADD_FINALIZER('rational::finalize();')
-    */
     rational() = default;
 
     rational(rational const & r) { m().set(m_val, r.m_val); }
     rational(rational&&) = default;
 
     explicit rational(int n) { m().set(m_val, n); }
-
     explicit rational(unsigned n) { m().set(m_val, n); }
-      
+    explicit rational(int64_t n) { m().set(m_val, n); }
+    explicit rational(uint64_t n) { m().set(m_val, n); }
+
     rational(int n, int d) { m().set(m_val, n, d); }
     rational(mpq const & q) { m().set(m_val, q); }
     rational(mpq && q) noexcept : m_val(std::move(q)) {}
@@ -172,7 +170,8 @@ public:
     rational & operator=(bool) = delete;
     rational operator*(bool  r1) const = delete;
 
-    rational & operator=(int v) {
+    rational & operator=(int v) { return *this = (int64_t)v; }
+    rational & operator=(int64_t v) {
         m().set(m_val, v);
         return *this;
     }
@@ -553,7 +552,10 @@ public:
     static bool limit_denominator(rational &num, rational const& limit);
 };
 
-inline bool operator!=(rational const & r1, rational const & r2) { 
+Z3_ADD_INITIALIZER(rational, rational::initialize, 0);
+Z3_ADD_FINALIZER(rational, rational::finalize);
+
+inline bool operator!=(rational const & r1, rational const & r2) {
     return !operator==(r1, r2); 
 }
 

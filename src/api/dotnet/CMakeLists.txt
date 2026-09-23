@@ -19,7 +19,6 @@ add_custom_command(OUTPUT "${Z3_DOTNET_NATIVE_FILE}"
     "${PROJECT_SOURCE_DIR}/scripts/update_api.py"
     ${Z3_GENERATED_FILE_EXTRA_DEPENDENCIES}
   COMMENT "Generating ${Z3_DOTNET_NATIVE_FILE}"
-  USES_TERMINAL
 )
 
 # Generate Enumerations.cs
@@ -35,7 +34,6 @@ add_custom_command(OUTPUT "${Z3_DOTNET_CONST_FILE}"
     "${PROJECT_SOURCE_DIR}/scripts/mk_consts_files.py"
     ${Z3_GENERATED_FILE_EXTRA_DEPENDENCIES}
   COMMENT "Generating ${Z3_DOTNET_CONST_FILE}"
-  USES_TERMINAL
 )
 
 set(Z3_DOTNET_ASSEMBLY_SOURCES_IN_SRC_TREE
@@ -156,7 +154,23 @@ else()
     set(Z3_DOTNET_WIN_RID "win-x64")
 endif()
 
-# TODO conditional for signing. we can then enable the ``Release_delaysign`` configuration
+set(Z3_DOTNET_KEY_FILE "" CACHE FILEPATH "Path to a .snk strong-name key file used to sign the .NET assembly")
+if(Z3_DOTNET_KEY_FILE)
+  get_filename_component(Z3_DOTNET_KEY_FILE "${Z3_DOTNET_KEY_FILE}" ABSOLUTE BASE_DIR "${CMAKE_BINARY_DIR}")
+  if(NOT EXISTS "${Z3_DOTNET_KEY_FILE}")
+    message(FATAL_ERROR "Z3_DOTNET_KEY_FILE '${Z3_DOTNET_KEY_FILE}' does not exist")
+  endif()
+  set(Z3_DOTNET_SIGNING_PROPERTY_GROUP "  <PropertyGroup>
+    <SignAssembly>true</SignAssembly>
+    <DelaySign>false</DelaySign>
+    <AssemblyOriginatorKeyFile>${Z3_DOTNET_KEY_FILE}</AssemblyOriginatorKeyFile>
+  </PropertyGroup>")
+else()
+  set(Z3_DOTNET_SIGNING_PROPERTY_GROUP "  <PropertyGroup>
+    <SignAssembly>false</SignAssembly>
+    <DelaySign>false</DelaySign>
+  </PropertyGroup>")
+endif()
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Microsoft.Z3.csproj.in ${CMAKE_CURRENT_BINARY_DIR}/build/Microsoft.Z3.csproj)
 ADD_DOTNET(${CMAKE_CURRENT_BINARY_DIR}/build/Microsoft.Z3.csproj
@@ -195,4 +209,3 @@ if(Z3_INSTALL_DOTNET_BINDINGS)
 #  set(PREFIX "${CMAKE_INSTALL_PREFIX}")
 #  set(VERSION "${Z3_VERSION}")
 endif()
-

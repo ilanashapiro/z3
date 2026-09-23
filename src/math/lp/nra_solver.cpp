@@ -11,6 +11,7 @@
 #include "math/lp/nra_solver.h"
 #include "math/lp/nla_coi.h"
 #include "nlsat/nlsat_solver.h"
+#include "nlsat/nlsat_transcendentals.h"
 #include "nlsat/nlsat_assignment.h"
 #include "math/polynomial/polynomial.h"
 #include "math/polynomial/algebraic_numbers.h"
@@ -36,6 +37,7 @@ struct solver::imp {
     scoped_ptr<scoped_anum_vector>   m_values; // values provided by LRA solver
     scoped_ptr<scoped_anum> m_tmp1, m_tmp2;
     nla::coi                  m_coi;
+    indexed_uint_set          m_skipped_constraints; // COI constraints kept out of the nlsat problem
     svector<lp::constraint_index> m_literal2constraint;
     struct eq {
         bool operator()(unsigned_vector const &a, unsigned_vector const &b) const {
@@ -53,7 +55,7 @@ struct solver::imp {
         m_nla_core(nla_core) {}
 
     bool need_check() {
-        return m_nla_core.m_to_refine.size() != 0;
+        return m_nla_core.m_to_refine.size() != 0 || !m_nla_core.get_transcendentals().empty();
     }
 
     void reset() {
@@ -62,6 +64,36 @@ struct solver::imp {
         m_nlsat = alloc(nlsat::solver, m_limit, m_params, false);
         m_values = alloc(scoped_anum_vector, am());
         m_lp2nl.reset();
+        m_skipped_constraints.reset();
+    }
+
+    // Power of two dividing the denominator of r (capped at 64).
+    static unsigned dyadic_valuation_of_denominator(rational const& r) {
+        rational den = denominator(r);
+        unsigned k = 0;
+        while (k < 64 && den.is_even()) {
+            den /= 2;
+            ++k;
+        }
+        return k;
+    }
+
+    // Bounds derived by the eager bound squeeze reach the constraint set as
+    // asserted atoms whose values are LP-vertex/delta-rational artifacts with a
+    // huge power-of-two denominator (e.g. 1367758954463/2^39). They are implied
+    // by the constraints they were derived from, yet after clearing denominators
+    // they inject outsized coefficients into the nlsat polynomials and blow up
+    // the resultant computations. Decimal constants from the input have
+    // denominators 10^k = 2^k*5^k with small k, so a large dyadic valuation
+    // singles out the derived bounds.
+    bool is_dyadic_artifact(lp::lar_base_constraint const& c) const {
+        unsigned const dyadic_artifact_threshold = 24;
+        if (dyadic_valuation_of_denominator(c.rhs()) >= dyadic_artifact_threshold)
+            return true;
+        for (auto const& [coeff, v] : c.coeffs())
+            if (dyadic_valuation_of_denominator(coeff) >= dyadic_artifact_threshold)
+                return true;
+        return false;
     }
 
     // Create polynomial definition for variable v used in setup_solver_poly.
@@ -122,6 +154,11 @@ struct solver::imp {
         // we rely on that all information encoded into the tableau is present as a constraint.
         for (auto ci : m_coi.constraints()) {
             auto &c = lra.constraints()[ci];
+            if (is_dyadic_artifact(c)) {
+                // implied bound artifact: keep it out of the nlsat problem
+                m_skipped_constraints.insert(ci);
+                continue;
+            }
             auto &pm = m_nlsat->pm();
             auto k = c.kind();
             auto rhs = c.rhs();
@@ -176,14 +213,35 @@ struct solver::imp {
     polynomial::polynomial_ref sub(polynomial::polynomial *a, polynomial::polynomial *b) {
         return polynomial_ref(m_nlsat->pm().sub(a, b), m_nlsat->pm());
     }
-    polynomial::polynomial_ref mul(polynomial::polynomial *a, polynomial::polynomial *b) {
-        return polynomial_ref(m_nlsat->pm().mul(a, b), m_nlsat->pm());
-    }
-    polynomial::polynomial_ref var(lp::lpvar v) {
-        return polynomial_ref(m_nlsat->pm().mk_polynomial(lp2nl(v)), m_nlsat->pm());
-    }
     polynomial::polynomial_ref constant(rational const& r) {
         return polynomial_ref(m_nlsat->pm().mk_const(r), m_nlsat->pm());
+    }
+
+    // Registers every transcendental application directly with nlsat so its
+    // own search loop refines them (exact Taylor brackets, global tangent
+    // axioms, cross-application monotonicity; see nlsat_transcendentals.h/
+    // .cpp and solver::imp::search_check's transcendentals branch), instead
+    // of nla_core feeding it progressively-refined polynomial axioms from
+    // outside. Requires "transcendentals" to also be set on m_nlsat (see
+    // check()).
+    void register_transcendentals_with_nlsat() {
+        // nla::transcendental_op_kind is nlsat::transcendental_op_kind (see
+        // nla_transcendentals.h): no translation needed, just forward a.op.
+        for (auto const& a : m_nla_core.get_transcendentals().apps())
+            m_nlsat->add_transcendental(a.op, lp2nl(a.arg), lp2nl(a.val));
+        // atan2(y, x) and pi are registered separately (see
+        // nla::transcendentals::atan2_apps/pi_var): they do not fit the
+        // single-argument (op, arg, val) shape above.
+        for (auto const& a : m_nla_core.get_transcendentals().atan2_apps())
+            m_nlsat->add_atan2(lp2nl(a.y), lp2nl(a.x), lp2nl(a.val));
+        lp::lpvar pi = m_nla_core.get_transcendentals().pi_var();
+        if (pi != nla::null_lpvar)
+            m_nlsat->add_pi(lp2nl(pi));
+    }
+
+    void add_axiom(polynomial::polynomial* p, lp::lconstraint_kind k) {
+        nlsat::literal lit = mk_literal(p, k);
+        m_nlsat->mk_clause(1, &lit, nullptr);
     }
 
     /**
@@ -205,6 +263,7 @@ struct solver::imp {
         smt_params_helper p(m_params);
 
 	    setup_solver_poly();
+        register_transcendentals_with_nlsat();
 
         TRACE(nra, m_nlsat->display(tout));
 
@@ -240,8 +299,10 @@ struct solver::imp {
             lra.init_model();
             for (lp::constraint_index ci : lra.constraints().indices()) {
                 if (check_constraint(ci)) continue;
-                // Non-COI constraint violations are benign; only COI violations indicate a bug.
-                if (m_coi.constraints().contains(ci)) {
+                // Non-COI constraint violations are benign, and constraints deliberately
+                // kept out of the nlsat problem may be violated by its model; only
+                // violations of COI constraints nlsat actually saw indicate a bug.
+                if (m_coi.constraints().contains(ci) && !m_skipped_constraints.contains(ci)) {
                     IF_VERBOSE(0, verbose_stream() << "constraint " << ci << " violated\n";
                                lra.constraints().display(verbose_stream()));
                     UNREACHABLE();
@@ -352,6 +413,7 @@ struct solver::imp {
             m_literal2constraint.setx(lit.index(), ci, lp::null_ci);
         }
         definitions.reset();
+        register_transcendentals_with_nlsat();
     }
 
     void process_polynomial_check_assignment(polynomial::polynomial const* p, rational& bound, const u_map<lp::lpvar>& nl2lp, lp::lar_term& t) {

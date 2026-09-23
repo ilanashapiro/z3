@@ -1941,12 +1941,18 @@ namespace {
             enode * n         = m_registers[pc->m_ireg];
             func_decl * f     = pc->m_label;
             enode * first     = n;
+            // Under HO matching, a register may reference a raw lambda subterm that has
+            // no corresponding app-enode in the E-graph, leaving m_registers[...] null.
+            // Guard against dereferencing a null register instead of crashing.
+            for (unsigned i = 0; i < num_args; ++i)
+                if (!m_registers[pc->m_iregs[i]])
+                    return false;
             switch (num_args) {
             case 1:
                 m_args[0] = m_registers[pc->m_iregs[0]]->get_root();
                 SASSERT(n != 0);
                 do {
-                    if (n->get_decl() == f &&
+                    if (n->get_decl() == f && n->get_num_args() == num_args &&
                         n->get_arg(0)->get_root() == m_args[0]) {
                         update_max_generation(n, first);
                         return true;
@@ -1960,7 +1966,7 @@ namespace {
                 m_args[1] = m_registers[pc->m_iregs[1]]->get_root();
                 SASSERT(n != 0);
                 do {
-                    if (n->get_decl() == f &&
+                    if (n->get_decl() == f && n->get_num_args() == num_args &&
                         n->get_arg(0)->get_root() == m_args[0] &&
                         n->get_arg(1)->get_root() == m_args[1]) {
                         update_max_generation(n, first);
@@ -2417,8 +2423,8 @@ namespace {
         case COMPARE:
             m_n1 = m_registers[static_cast<const compare *>(m_pc)->m_reg1];
             m_n2 = m_registers[static_cast<const compare *>(m_pc)->m_reg2];
-            SASSERT(m_n1 != 0);
-            SASSERT(m_n2 != 0);
+            if (!m_n1 || !m_n2)
+                goto backtrack;
             if (m_n1->get_root() != m_n2->get_root())
                 goto backtrack;
             
@@ -2434,9 +2440,9 @@ namespace {
         case CHECK:
             m_n1 = m_registers[static_cast<const check *>(m_pc)->m_reg];
             m_n2 = static_cast<const check *>(m_pc)->m_enode;
-            SASSERT(m_n1 != 0);
-            SASSERT(m_n2 != 0);
-
+            if (!m_n1 || !m_n2)
+                goto backtrack;
+            
             // hack to handle dynamically generated patterns:
             // if the pattern is ground and an if-expression, ignore equality check.
             if (m_n1->get_root() != m_n2->get_root() && !m.is_ite(m_n2->get_expr()))
@@ -3497,12 +3503,11 @@ namespace {
            \brief Update inverted path index.
         */
         void update_filters(quantifier * qa, app * mp) {
-            TRACE(mam_bug, tout << "updating filters using:\n" << mk_pp(mp, m) << "\n";);
             unsigned num_vars = qa->get_num_decls();
             if (num_vars >= m_var_paths.size())
                 m_var_paths.resize(num_vars+1);
-            for (unsigned i = 0; i < num_vars; ++i)
-                m_var_paths[i].reset();
+            for (auto& p : m_var_paths)
+                p.reset();
             m_tmp_region.reset();
             // Given a multi-pattern (p_1, ..., p_n)
             // We need to update the filters using patterns:
@@ -3795,7 +3800,8 @@ namespace {
                 SASSERT(tmp_tree != 0);
                 SASSERT(m_context.get_num_enodes_of(lbl) > 0);
                 m_interpreter.init(tmp_tree);
-                for (enode * app : m_context.enodes_of(lbl)) {
+                for (unsigned i = 0; i < m_context.enodes_of(lbl).size(); ++i) {
+                    enode * app = m_context.enodes_of(lbl)[i];
                     if (m_context.is_relevant(app))
                         m_interpreter.execute_core(tmp_tree, app);
                 }
@@ -3939,13 +3945,20 @@ namespace {
         void rematch(bool use_irrelevant) override {
             ptr_vector<code_tree>::iterator it  = m_trees.begin_code_trees();
             ptr_vector<code_tree>::iterator end = m_trees.end_code_trees();
-            unsigned lbl = 0;
-            for (; it != end; ++it, ++lbl) {
+            for (; it != end; ++it) {
                 code_tree * t = *it;
                 if (t) {
                     m_interpreter.init(t);
                     func_decl * lbl = t->get_root_lbl();
-                    for (enode * curr : m_context.enodes_of(lbl)) {
+                    // execute_core may trigger (HO-lambda / non-ground) internalization of
+                    // new applications of `lbl`, which can grow/reallocate the context's
+                    // decl->enodes vector (the enode_vector for `lbl`, but also possibly the
+                    // outer vector<ptr_vector<enode>> that owns it, invalidating even a live
+                    // reference to `m_context.enodes_of(lbl)`). Re-fetch the vector itself
+                    // (not just its size) every iteration so both kinds of reallocation are
+                    // picked up safely instead of reading from a stale/freed buffer.
+                    for (unsigned i = 0; i < m_context.enodes_of(lbl).size(); ++i) {
+                        enode * curr = m_context.enodes_of(lbl)[i];
                         if (use_irrelevant || m_context.is_relevant(curr))
                             m_interpreter.execute_core(t, curr);
                     }
@@ -4059,4 +4072,3 @@ namespace smt {
         return alloc(mam_impl, ctx, true);
     }
 }
-

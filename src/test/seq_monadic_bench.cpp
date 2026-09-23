@@ -9,9 +9,9 @@ Abstract:
 
     Opt-in benchmark harness for seq_monadic. Reads every *.smt2 under
     Z3_SEQ_BENCH_DIR, extracts regex memberships and length bounds, and reports
-    CSV timing.  Z3_SEQ_MONADIC_MODE selects "brz" or "light-ant" (default).
+    CSV timing.  The usual smt.seq.regex_* parameters configure seq_monadic.
 
-    Assertions the harness cannot hand to seq_monadic are DROPPED.  The CSV
+    Assertions the harness cannot hand to seq::monadic are DROPPED.  The CSV
     reports how many were dropped ("dropped") and whether the benchmark was
     modelled in full ("complete").  On an incomplete benchmark only an `unsat`
     verdict carries over to the original problem: dropping conjuncts weakens it,
@@ -26,9 +26,11 @@ Abstract:
 #include "ast/seq_decl_plugin.h"
 #include "ast/rewriter/seq_rewriter.h"
 #include "ast/rewriter/th_rewriter.h"
-#include "ast/rewriter/seq_monadic.h"
+#include "ast/seq/seq_monadic.h"
 #include "cmd_context/cmd_context.h"
+#include "params/theory_seq_params.h"
 #include "parsers/smt2/smt2parser.h"
+#include "util/gparams.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -56,11 +58,18 @@ char const* mode_str(seq::transition_mode mode) {
     return "";
 }
 
-seq::transition_mode get_mode() {
-    char const* mode = getenv("Z3_SEQ_MONADIC_MODE");
-    if (mode && std::string(mode) == "brz")
+seq::transition_mode get_mode(symbol const& mode) {
+    if (mode == "brz")
         return seq::transition_mode::brzozowski_tm;
     return seq::transition_mode::light_antimirov_tm;
+}
+
+seq::monadic::orientation get_orientation(symbol const& o) {
+    if (o == "reversed")
+        return seq::monadic::orientation::reversed;
+    if (o == "retry")
+        return seq::monadic::orientation::retry;
+    return seq::monadic::orientation::forward;
 }
 
 bool is_seq_var(expr* t) {
@@ -80,7 +89,7 @@ std::string read_status(std::string const& path) {
 
 lbool run_file(
     std::string const& path,
-    seq::transition_mode mode,
+    theory_seq_params const& params,
     double& solve_ms,
     bool& parsed,
     bool& complete,
@@ -103,7 +112,11 @@ lbool run_file(
     seq_rewriter rw(m);
     th_rewriter trw(m);
     trail_stack undo_trail;
-    seq_monadic mon(rw, undo_trail, mode);
+    seq::transition_mode mode = get_mode(params.m_seq_regex_transition_mode);
+    seq::monadic mon(rw, undo_trail, mode);
+    mon.set_budget(params.m_seq_regex_budget);
+    mon.set_orientation(get_orientation(params.m_seq_regex_orientation));
+    mon.set_split_rounds(params.m_seq_regex_split);
 
     obj_map<expr, expr*> var_re;
     obj_map<expr, expr*> term_re;
@@ -115,7 +128,7 @@ lbool run_file(
     obj_map<expr, len_bounds> bounds;
     ptr_vector<expr> bounded;
 
-    // seq_monadic models |t| <= hi as a bounded loop, so a huge hi is not usable.
+    // seq::monadic models |t| <= hi as a bounded loop, so a huge hi is not usable.
     const int64_t MAX_LEN_BOUND = 1 << 16;
     const int64_t NO_UPPER = INT64_MAX;
 
@@ -179,7 +192,7 @@ lbool run_file(
 
     // A length equation |t| = c*k + d, where k is an integer variable occurring in no
     // other assertion than its own bounds, describes exactly the lengths congruent to d
-    // modulo c that those bounds allow -- that is, t in .{base}(.{c})*.  seq_monadic has
+    // modulo c that those bounds allow -- that is, t in .{base}(.{c})*.  seq::monadic has
     // no integer reasoning, so without this rewrite both the equation and its guard are
     // dropped and the benchmark measures a strictly weaker problem.
     obj_map<expr, expr*> modular_re;         // the equation  -> regex encoding it
@@ -355,7 +368,7 @@ lbool run_file(
         }
     }
 
-    // Collect what seq_monadic can model.  Conjunctions are traversed so that an
+    // Collect what seq::monadic can model.  Conjunctions are traversed so that an
     // unsupported conjunct does not discard its siblings; every conjunct that cannot be
     // modelled is counted in `dropped`.  Dropping conjuncts only weakens the problem, so
     // an unsat verdict still transfers to the benchmark while a sat verdict does not.
@@ -366,7 +379,7 @@ lbool run_file(
                 collect(arg);
             return;
         }
-        // A negated membership is a membership in the complement.  seq_monadic handles
+        // A negated membership is a membership in the complement.  seq::monadic handles
         // re.comp natively and seq_regex::unfold_complement performs the same rewrite on
         // the production path, so modelling it here rather than dropping it keeps the
         // benchmark faithful to what the solver actually sees.
@@ -442,7 +455,7 @@ lbool run_file(
     }
 
     auto start = std::chrono::high_resolution_clock::now();
-    mon.set_gen_model(false);                     // benchmark only needs the verdict
+    mon.set_gen_solution(false);                     // benchmark only needs the verdict
     lbool verdict = n_added == 0
         ? l_undef
         : mon.check();
@@ -472,13 +485,14 @@ void display_row(
 void tst_seq_monadic_bench() {
     namespace fs = std::filesystem;
     std::error_code ec;
-    seq::transition_mode mode = get_mode();
+    theory_seq_params params(gparams::get_module("smt"));
+    seq::transition_mode mode = get_mode(params.m_seq_regex_transition_mode);
 
     if (char const* file = getenv("Z3_SEQ_BENCH_FILE")) {
         double ms = 0;
         bool parsed = false, complete = false;
         unsigned dropped = 0;
-        lbool verdict = run_file(file, mode, ms, parsed, complete, dropped);
+        lbool verdict = run_file(file, params, ms, parsed, complete, dropped);
         display_row(file, "", read_status(file), complete, mode, verdict, ms, dropped);
         if (!complete)
             std::cerr << "INCOMPLETE: " << dropped << " assertion(s) not modelled; "
@@ -489,7 +503,10 @@ void tst_seq_monadic_bench() {
     char const* dir = getenv("Z3_SEQ_BENCH_DIR");
     if (!dir) {
         std::cout << "seq_monadic_bench: set Z3_SEQ_BENCH_DIR; "
-                     "optionally set Z3_SEQ_MONADIC_MODE=brz|light-ant\n";
+                     "optional parameters: smt.seq.regex_transition_mode=brz|light-ant, "
+                     "smt.seq.regex_budget=<n>, "
+                     "smt.seq.regex_orientation=forward|reversed|retry, "
+                     "smt.seq.regex_split=<rounds>\n";
         return;
     }
     if (!fs::exists(dir, ec)) {
@@ -517,7 +534,7 @@ void tst_seq_monadic_bench() {
         double ms = 0;
         bool parsed = false, complete = false;
         unsigned dropped = 0;
-        lbool verdict = run_file(file, mode, ms, parsed, complete, dropped);
+        lbool verdict = run_file(file, params, ms, parsed, complete, dropped);
         display_row(relative, tier, status, complete, mode, verdict, ms, dropped);
         total_ms += ms;
         if (!parsed) ++unparsed;

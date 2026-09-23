@@ -23,7 +23,6 @@ Notes:
 #include "ast/converters/model_converter.h"
 #include "tactic/tactic.h"
 #include "solver/preferred_value_propagator.h"
-#include "qe/qsat.h"
 #include "opt/opt_solver.h"
 #include "opt/opt_pareto.h"
 #include "opt/optsmt.h"
@@ -178,7 +177,8 @@ namespace opt {
         ref<solver>         m_sat_solver;
         scoped_ptr<pareto_base>  m_pareto;
         bool                 m_pareto1;
-        scoped_ptr<qe::qmax> m_qmax;
+        bool                 m_pareto_exact_comparison = false;
+        bool                 m_has_assumptions = false;
         sref_vector<model>  m_box_models;
         unsigned            m_box_index;
         params_ref          m_params;
@@ -207,6 +207,7 @@ namespace opt {
         symbol                       m_logic;
         svector<symbol>              m_labels;
         std::string                  m_unknown;
+        std::string                  m_pareto_unknown;
     public:
         context(ast_manager& m);
         ~context() override;
@@ -256,8 +257,8 @@ namespace opt {
         expr_ref get_lower(unsigned idx);
         expr_ref get_upper(unsigned idx);
 
-        void get_lower(unsigned idx, expr_ref_vector& es) { to_exprs(get_lower_as_num(idx), es); }
-        void get_upper(unsigned idx, expr_ref_vector& es) { to_exprs(get_upper_as_num(idx), es); }
+        void get_lower(unsigned idx, expr_ref_vector& es) { get_lower_value(idx).to_exprs(es); }
+        void get_upper(unsigned idx, expr_ref_vector& es) { get_upper_value(idx).to_exprs(es); }
 
         std::string to_string();
 
@@ -306,11 +307,10 @@ namespace opt {
         lbool execute_lex();
         lbool execute_box();
         lbool execute_pareto();
+        solver* mk_pareto_solver();
         lbool adjust_unknown(lbool r);
         bool scoped_lex();
         bool contains_quantifiers() const;
-        expr_ref to_expr(inf_eps const& n);
-        void to_exprs(inf_eps const& n, expr_ref_vector& es);
 
         void reset_maxsmts();
         void import_scoped_state();
@@ -339,8 +339,8 @@ namespace opt {
         void update_lower() { update_bound(true); }
         void update_bound(bool is_lower);
 
-        inf_eps get_lower_as_num(unsigned idx);
-        inf_eps get_upper_as_num(unsigned idx);
+        objective_value get_lower_value(unsigned idx);
+        objective_value get_upper_value(unsigned idx);
 
 
         struct is_fd;
@@ -374,17 +374,13 @@ namespace opt {
         void display_benchmark();
 
         // pareto
-        void yield();
+        void publish_pareto_result();
         expr_ref mk_ge(expr* t, expr* s);
         expr_ref mk_cmp(bool is_ge, model_ref& mdl, objective const& obj);
 
 
-        // quantifiers
-        bool is_qsat_opt();
-        lbool run_qsat_opt();
 
       
     };
 
 }
-

@@ -2,7 +2,7 @@ name: Build FStar master with Z3 master
 
 on:
   schedule:
-    - cron: "9 4 * * *"
+    - cron: "9 4 * * 0"
   workflow_dispatch:
     inputs:
       z3_ref:
@@ -28,7 +28,7 @@ on:
       fstar_otherflags:
         description: "Extra FStar OTHERFLAGS"
         required: false
-        default: "--split_queries on_failure --log_failing_queries --ext higher_order_smt --proof_recovery"
+        default: "--log_failing_queries --proof_recovery"
       fstar_run_tests:
         description: "Run the FStar test suite (make test) after the build"
         required: false
@@ -56,7 +56,7 @@ jobs:
       Z3_RUNTIME_ARGS: ${{ github.event.inputs.z3_runtime_args || 'smt.ho_matching=false' }}
       FSTAR_REF: ${{ github.event.inputs.fstar_ref || 'master' }}
       FSTAR_OPAM_SWITCH: ${{ github.event.inputs.fstar_opam_switch || '4.14.2' }}
-      FSTAR_OTHERFLAGS: ${{ github.event.inputs.fstar_otherflags || '--split_queries on_failure --log_failing_queries --ext higher_order_smt --proof_recovery' }}
+      FSTAR_OTHERFLAGS: ${{ github.event.inputs.fstar_otherflags || '--log_failing_queries --proof_recovery' }}
       FSTAR_RUN_TESTS: ${{ github.event.inputs.fstar_run_tests || 'true' }}
       DISCUSSION_CATEGORY: ${{ github.event.inputs.discussion_category || 'Agentic Workflows' }}
     steps:
@@ -66,17 +66,20 @@ jobs:
           ref: ${{ env.Z3_REF }}
           fetch-depth: 1
 
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+
       - name: Install dependencies
         run: |
           set -euo pipefail
           sudo apt-get update -y
-          sudo apt-get install -y cmake ninja-build python3 git curl unzip opam m4 pkg-config libgmp-dev
+          sudo apt-get install -y ninja-build python3 git curl unzip opam m4 pkg-config libgmp-dev
 
       - name: Build Z3
         run: |
           set -euo pipefail
           mkdir -p /tmp/gh-aw/agent
-          cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release $Z3_CMAKE_ARGS
+          cmake -G Ninja -S . -B build/release -DCMAKE_BUILD_TYPE=Release $Z3_CMAKE_ARGS
           ninja -C build/release z3
           ./build/release/z3 --version | tee /tmp/gh-aw/agent/z3-version.txt
           printf '(check-sat)\n' | ./build/release/z3 $Z3_RUNTIME_ARGS -in | tee /tmp/gh-aw/agent/z3-runtime-check.txt

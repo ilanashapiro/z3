@@ -159,11 +159,12 @@ class theory_lra::imp {
     vector<ptr_vector<api_bound> > m_use_list;        // bounds where variables are used.
 
     // attributes for incremental version:
-    u_map<api_bound*>      m_bool_var2bound;
+    ptr_vector<api_bound>  m_bool_var2bound;   // indexed by bool_var (dense); nullptr = absent
     vector<lp_bounds>      m_bounds;
     unsigned_vector        m_unassigned_bounds;
     unsigned_vector        m_bounds_trail;
     unsigned               m_asserted_qhead;
+    unsigned_vector        m_active_inf_eps_constraints;
 
     svector<unsigned>       m_bv_to_propagate;      // Boolean variables that can be propagated
     
@@ -485,8 +486,12 @@ class theory_lra::imp {
                         theory_var rv = mk_var(n);
                         m_nla->add_bounded_division(register_theory_var_in_lar_solver(q), register_theory_var_in_lar_solver(x), register_theory_var_in_lar_solver(y), register_theory_var_in_lar_solver(rv));
                     }
-                    if (!a.is_numeral(n2) && is_app(n1) && is_app(n2)) {
-                        // register mod(x, y) with variable divisor for divisibility reasoning
+                    if (!a.is_numeral(n2) && !a.is_zero(n1) && is_app(n1) && is_app(n2)) {
+                        // register mod(x, y) with variable divisor for divisibility reasoning;
+                        // skip a zero dividend: mk_idiv_mod_axioms already forces
+                        // y != 0 => mod(0, y) = 0 and div(0, y) = 0 by linear axioms, so
+                        // divisibility closure adds nothing and ensure_nla() here would
+                        // pull an otherwise linear problem into the nonlinear solver
                         ensure_nla();
                         if (m_nla) {
                             app_ref div(a.mk_idiv(n1, n2), m);
@@ -508,7 +513,9 @@ class theory_lra::imp {
                     if (!ctx().relevancy()) mk_rem_axiom(n1, n2);                    
                 }
                 else if (a.is_div(n, n1, n2)) {
-                    if (!a.is_numeral(n2, r) || r.is_zero()) found_underspecified(n);
+                    expr_ref divisor(n2, m);
+                    ctx().get_rewriter()(divisor);
+                    if (!a.is_numeral(divisor, r) || r.is_zero()) found_underspecified(n);
                     if (!ctx().relevancy()) mk_div_axiom(n1, n2);                    
                     st.to_ensure_var().push_back(n1);
                     st.to_ensure_var().push_back(n2);
@@ -530,6 +537,53 @@ class theory_lra::imp {
                     mk_bv_axiom(to_app(n));
                     for (expr* arg : *to_app(n))
                         st.to_ensure_var().push_back(arg);                    
+                }
+                else if (a.is_sin(n, n1) || a.is_cos(n, n1) || a.is_tan(n, n1) ||
+                         a.is_sinh(n, n1) || a.is_cosh(n, n1) || a.is_tanh(n, n1) ||
+                         a.is_asin(n, n1) || a.is_acos(n, n1) || a.is_atan(n, n1) ||
+                         a.is_asinh(n, n1) || a.is_acosh(n, n1) || a.is_atanh(n, n1) ||
+                         a.is_exp(n, n1) || a.is_log(n, n1)) {
+                    ensure_nla();
+                    if (m_nla) {
+                        nlsat::transcendental_op_kind op;
+                        if (a.is_sin(n))        op = nlsat::transcendental_op_kind::SIN;
+                        else if (a.is_cos(n))   op = nlsat::transcendental_op_kind::COS;
+                        else if (a.is_tan(n))   op = nlsat::transcendental_op_kind::TAN;
+                        else if (a.is_sinh(n))  op = nlsat::transcendental_op_kind::SINH;
+                        else if (a.is_cosh(n))  op = nlsat::transcendental_op_kind::COSH;
+                        else if (a.is_tanh(n))  op = nlsat::transcendental_op_kind::TANH;
+                        else if (a.is_asin(n))  op = nlsat::transcendental_op_kind::ASIN;
+                        else if (a.is_acos(n))  op = nlsat::transcendental_op_kind::ACOS;
+                        else if (a.is_atan(n))  op = nlsat::transcendental_op_kind::ATAN;
+                        else if (a.is_asinh(n)) op = nlsat::transcendental_op_kind::ASINH;
+                        else if (a.is_acosh(n)) op = nlsat::transcendental_op_kind::ACOSH;
+                        else if (a.is_atanh(n)) op = nlsat::transcendental_op_kind::ATANH;
+                        else if (a.is_log(n))   op = nlsat::transcendental_op_kind::LOG;
+                        else                    op = nlsat::transcendental_op_kind::EXP;
+                        SASSERT(is_app(n1));
+                        internalize_term(to_app(n1));
+                        theory_var x = mk_var(n1);
+                        m_nla->add_transcendental(op, register_theory_var_in_lar_solver(x), register_theory_var_in_lar_solver(v));
+                    }
+                    st.to_ensure_var().push_back(n1);
+                }
+                else if (a.is_atan2(n, n1, n2)) {
+                    SASSERT(is_app(n1) && is_app(n2));
+                    ensure_nla();
+                    if (m_nla) {
+                        internalize_term(to_app(n1));
+                        internalize_term(to_app(n2));
+                        theory_var y = mk_var(n1);
+                        theory_var x = mk_var(n2);
+                        m_nla->add_atan2(register_theory_var_in_lar_solver(y), register_theory_var_in_lar_solver(x), register_theory_var_in_lar_solver(v));
+                    }
+                    st.to_ensure_var().push_back(n1);
+                    st.to_ensure_var().push_back(n2);
+                }
+                else if (a.is_pi(n)) {
+                    ensure_nla();
+                    if (m_nla)
+                        m_nla->add_pi(register_theory_var_in_lar_solver(v));
                 }
                 else if (!a.is_div0(n)) {
                     found_unsupported(n);
@@ -947,7 +1001,8 @@ public:
         lp_api::bound_kind k;
         theory_var v = null_theory_var;
         bool_var bv = ctx().mk_bool_var(atom);
-        m_bool_var2bound.erase(bv);
+        if (bv < m_bool_var2bound.size())
+            m_bool_var2bound[bv] = nullptr;
         ctx().set_var_theory(bv, get_id());
         if (a.is_le(atom, n1, n2) && a.is_extended_numeral(n2, r) && is_app(n1)) {
             v = internalize_def(to_app(n1));
@@ -987,7 +1042,7 @@ public:
         m_bounds[v].push_back(b);
         updt_unassigned_bounds(v, +1);
         m_bounds_trail.push_back(v);
-        m_bool_var2bound.insert(bv, b);
+        m_bool_var2bound.setx(bv, b, nullptr);
         mk_bound_axioms(*b);
         TRACE(arith_internalize, tout << "Internalized " << bv << ": " << bpp(atom) << "\n";);
         return true;
@@ -1025,8 +1080,8 @@ public:
     }
 
     lbool get_phase(bool_var v) {
-        api_bound* b;
-        if (!m_bool_var2bound.find(v, b)) {
+        api_bound* b = m_bool_var2bound.get(v, nullptr);
+        if (!b) {
             return l_undef;
         }
         lp::lconstraint_kind k = lp::EQ;
@@ -2288,10 +2343,10 @@ public:
         while (m_asserted_qhead < m_asserted_atoms.size() && !ctx().inconsistent() && m.inc()) {
             auto [bv, is_true] = m_asserted_atoms[m_asserted_qhead];
                         
-            api_bound* b = nullptr;
+            api_bound* b = m_bool_var2bound.get(bv, nullptr);
             TRACE(arith, tout << "propagate: " << literal(bv, !is_true) << "\n";
-                  if (!m_bool_var2bound.contains(bv)) tout << "not found\n");
-            if (m_bool_var2bound.find(bv, b) && !assert_bound(bv, is_true, *b)) {
+                  if (!b) tout << "not found\n");
+            if (b && !assert_bound(bv, is_true, *b)) {
                 get_infeasibility_explanation_and_set_conflict();
                 return true;
             }
@@ -2467,6 +2522,17 @@ public:
 #endif
     
     unsigned propagate_lp_solver_bound(const lp::implied_bound& be) {
+        // implied_bound stores only a rational threshold and a strict bit.
+        // Do not project a consequence whose explanation uses a delta-rational
+        // API bound, because this can strengthen x >= r - eps into x > r.
+        if (!m_active_inf_eps_constraints.empty()) {
+            for (lp::constraint_index ci : lp().flatten(be.explain_implied())) {
+                for (lp::constraint_index eps_ci : m_active_inf_eps_constraints)
+                    if (ci == eps_ci)
+                        return 0;
+            }
+        }
+
         lpvar vi = be.m_j;
         theory_var v = lp().local_to_external(vi);
 
@@ -2946,55 +3012,53 @@ public:
         CTRACE(arith, !m_new_bounds.empty(), tout << "flush bound axioms\n";);
 
         while (!m_new_bounds.empty()) {
-            lp_bounds atoms;            
-            atoms.push_back(m_new_bounds.back());
-            m_new_bounds.pop_back();
-            theory_var v = atoms.back()->get_var();
-            for (unsigned i = 0; i < m_new_bounds.size(); ++i) {
-                if (m_new_bounds[i]->get_var() == v) {
-                    atoms.push_back(m_new_bounds[i]);
-                    m_new_bounds[i] = m_new_bounds.back();
-                    m_new_bounds.pop_back();
-                    --i;
-                }
-            }            
-            CTRACE(arith, atoms.size() > 1, 
-                   for (auto* a : atoms) a->display(tout) << "\n";);
-            lp_bounds occs(m_bounds[v]);
+            lp_bounds pending(m_new_bounds);
+            m_new_bounds.reset();
+            std::stable_sort(pending.begin(), pending.end(), 
+                      [](api_bound* a, api_bound* b) { return a->get_var() < b->get_var(); });
+            for (unsigned j = 0; j < pending.size(); ) {
+                lp_bounds atoms;            
+                theory_var v = pending[j]->get_var();
+                for (; j < pending.size() && pending[j]->get_var() == v; ++j) 
+                    atoms.push_back(pending[j]);
+                CTRACE(arith, atoms.size() > 1, 
+                       for (auto* a : atoms) a->display(tout) << "\n";);
+                lp_bounds occs(m_bounds[v]);
             
-            std::sort(atoms.begin(), atoms.end(), compare_bounds());
-            std::sort(occs.begin(), occs.end(), compare_bounds());
+                std::stable_sort(atoms.begin(), atoms.end(), compare_bounds());
+                std::stable_sort(occs.begin(), occs.end(), compare_bounds());
                 
-            iterator begin1 = occs.begin();
-            iterator begin2 = occs.begin();
-            iterator end = occs.end();
-            begin1 = first(lp_api::lower_t, begin1, end);
-            begin2 = first(lp_api::upper_t, begin2, end);
+                iterator begin1 = occs.begin();
+                iterator begin2 = occs.begin();
+                iterator end = occs.end();
+                begin1 = first(lp_api::lower_t, begin1, end);
+                begin2 = first(lp_api::upper_t, begin2, end);
                 
-            iterator lo_inf = begin1, lo_sup = begin1;
-            iterator hi_inf = begin2, hi_sup = begin2;
-            bool flo_inf, fhi_inf, flo_sup, fhi_sup;
-            ptr_addr_hashtable<api_bound> visited;
-            for (unsigned i = 0; i < atoms.size(); ++i) {
-                api_bound* a1 = atoms[i];
-                iterator lo_inf1 = next_inf(a1, lp_api::lower_t, lo_inf, end, flo_inf);
-                iterator hi_inf1 = next_inf(a1, lp_api::upper_t, hi_inf, end, fhi_inf);
-                iterator lo_sup1 = next_sup(a1, lp_api::lower_t, lo_sup, end, flo_sup);
-                iterator hi_sup1 = next_sup(a1, lp_api::upper_t, hi_sup, end, fhi_sup);
-                if (lo_inf1 != end) lo_inf = lo_inf1; 
-                if (lo_sup1 != end) lo_sup = lo_sup1; 
-                if (hi_inf1 != end) hi_inf = hi_inf1; 
-                if (hi_sup1 != end) hi_sup = hi_sup1; 
-                if (!flo_inf) lo_inf = end;
-                if (!fhi_inf) hi_inf = end;
-                if (!flo_sup) lo_sup = end;
-                if (!fhi_sup) hi_sup = end;
-                visited.insert(a1);
-                if (lo_inf1 != end && lo_inf != end && !visited.contains(*lo_inf)) mk_bound_axiom(*a1, **lo_inf);
-                if (lo_sup1 != end && lo_sup != end && !visited.contains(*lo_sup)) mk_bound_axiom(*a1, **lo_sup);
-                if (hi_inf1 != end && hi_inf != end && !visited.contains(*hi_inf)) mk_bound_axiom(*a1, **hi_inf);
-                if (hi_sup1 != end && hi_sup != end && !visited.contains(*hi_sup)) mk_bound_axiom(*a1, **hi_sup);
-            }                            
+                iterator lo_inf = begin1, lo_sup = begin1;
+                iterator hi_inf = begin2, hi_sup = begin2;
+                bool flo_inf, fhi_inf, flo_sup, fhi_sup;
+                ptr_addr_hashtable<api_bound> visited;
+                for (unsigned i = 0; i < atoms.size(); ++i) {
+                    api_bound* a1 = atoms[i];
+                    iterator lo_inf1 = next_inf(a1, lp_api::lower_t, lo_inf, end, flo_inf);
+                    iterator hi_inf1 = next_inf(a1, lp_api::upper_t, hi_inf, end, fhi_inf);
+                    iterator lo_sup1 = next_sup(a1, lp_api::lower_t, lo_sup, end, flo_sup);
+                    iterator hi_sup1 = next_sup(a1, lp_api::upper_t, hi_sup, end, fhi_sup);
+                    if (lo_inf1 != end) lo_inf = lo_inf1; 
+                    if (lo_sup1 != end) lo_sup = lo_sup1; 
+                    if (hi_inf1 != end) hi_inf = hi_inf1; 
+                    if (hi_sup1 != end) hi_sup = hi_sup1; 
+                    if (!flo_inf) lo_inf = end;
+                    if (!fhi_inf) hi_inf = end;
+                    if (!flo_sup) lo_sup = end;
+                    if (!fhi_sup) hi_sup = end;
+                    visited.insert(a1);
+                    if (lo_inf1 != end && lo_inf != end && !visited.contains(*lo_inf)) mk_bound_axiom(*a1, **lo_inf);
+                    if (lo_sup1 != end && lo_sup != end && !visited.contains(*lo_sup)) mk_bound_axiom(*a1, **lo_sup);
+                    if (hi_inf1 != end && hi_inf != end && !visited.contains(*hi_inf)) mk_bound_axiom(*a1, **hi_inf);
+                    if (hi_sup1 != end && hi_sup != end && !visited.contains(*hi_sup)) mk_bound_axiom(*a1, **hi_sup);
+                }                            
+            }
         }
     }
 
@@ -3304,6 +3368,10 @@ public:
         TRACE(arith, tout << b << "\n";);
         lp::constraint_index ci = b.get_constraint(is_true);
         lp().activate(ci);
+        if (is_true && b.has_infinitesimal()) {
+            ctx().push_trail(push_back_vector(m_active_inf_eps_constraints));
+            m_active_inf_eps_constraints.push_back(ci);
+        }
         if (is_infeasible()) 
             return false;
         lp::lconstraint_kind k = bound2constraint_kind(b.is_int(), b.get_bound_kind(), is_true);
@@ -3642,7 +3710,7 @@ public:
     void set_evidence(lp::constraint_index idx, literal_vector& core, svector<enode_pair>& eqs) {
         if (idx == UINT_MAX) 
             return;        
-        switch (m_constraint_sources[idx]) {
+        switch (m_constraint_sources.get(idx, null_source)) {
         case inequality_source: {
             literal lit = m_inequalities[idx];
             SASSERT(lit != null_literal);
@@ -3660,6 +3728,13 @@ public:
             // skip definitions (these are treated as hard constraints)
             break;
         }
+        case null_source:
+            // idx has no theory_lra-tracked source: a genuine, permanent
+            // fact asserted directly against lar_solver by an nla_core
+            // sub-module (e.g. nla_transcendentals' range axioms) rather
+            // than derived from a boolean literal/equality. There is
+            // nothing to explain back to the SAT core.
+            break;
         default:
             UNREACHABLE();
             break;
@@ -4169,27 +4244,26 @@ public:
         return false;
     }
 
-    theory_lra::inf_eps max_result(theory_var v, lpvar vi, lp::lp_status st, expr_ref& blocker, bool& has_shared) {
+    theory_lra::inf_eps max_result(theory_var v, lpvar vi, lp::impq const& term_max, lp::lp_status st, expr_ref& blocker) {
         switch (st) {
         case lp::lp_status::OPTIMAL:
             init_variable_values();
             TRACE(arith, display(tout << st << " v" << v << " vi: " << vi << "\n"););
-            blocker = mk_gt(v);
-            return value(v);
+            blocker = mk_gt(v, term_max);
+            return inf_eps(rational(0), inf_rational(term_max.x, term_max.y));
         case lp::lp_status::FEASIBLE:
             TRACE(arith, display(tout << st << " v" << v << " vi: " << vi << "\n"););
-            blocker = mk_gt(v);
-            return value(v);
+            blocker = mk_gt(v, term_max);
+            return inf_eps(rational(0), inf_rational(term_max.x, term_max.y));
         default:
             SASSERT(st == lp::lp_status::UNBOUNDED);
             TRACE(arith, display(tout << st << " v" << v << " vi: " << vi << "\n"););
-            has_shared = false;
             blocker = m.mk_false();
             return inf_eps(rational::one(), inf_rational());
         }
     }
 
-    theory_lra::inf_eps maximize(theory_var v, expr_ref& blocker, bool& has_shared) {
+    theory_lra::inf_eps maximize(theory_var v, expr_ref& blocker) {
         unsigned level = 2;
         lp::impq term_max;
         lp::lp_status st;
@@ -4210,7 +4284,7 @@ public:
             if (max_with_nl(v, st, level, blocker, nl_result))
                 return nl_result;
         }
-        return max_result(v, vi, st, blocker, has_shared);
+        return max_result(v, vi, term_max, st, blocker);
     }
 
     expr_ref mk_gt(theory_var v) {
@@ -4365,7 +4439,10 @@ public:
             // validation assert the over-strong v >= r.  The bound's real meaning
             // (including the -delta) is attached via the api_bound's eps below.
             std::ostringstream strm;
-            strm << r << " - eps <= " << mk_pp(get_expr(v), m) << " (opt)";
+            strm << r;
+            if (!val.get_infinitesimal().is_zero())
+                strm << " + " << val.get_infinitesimal() << "*eps";
+            strm << " <= " << mk_pp(get_expr(v), m) << " (opt)";
             b = m.mk_const(symbol(strm.str()), m.mk_bool_sort());
         }
         else if (is_strict) {
@@ -4377,18 +4454,19 @@ public:
         if (!ctx().b_internalized(b)) {
             fm.hide(b->get_decl());
             bool_var bv =  ctx().mk_bool_var(b);
-            m_bool_var2bound.erase(bv);
+            if (bv < m_bool_var2bound.size())
+                m_bool_var2bound[bv] = nullptr;
             ctx().set_var_theory(bv, get_id());
             // ctx().set_enode_flag(bv, true);
             lp_api::bound_kind bkind = lp_api::bound_kind::lower_t;
             if (is_strict) bkind = lp_api::bound_kind::upper_t;
-            rational eps = is_lower_eps ? rational::minus_one() : rational::zero();
+            rational eps = is_lower_eps ? val.get_infinitesimal() : rational::zero();
             api_bound* a = mk_var_bound(bv, v, bkind, r, eps);
             mk_bound_axioms(*a);
             updt_unassigned_bounds(v, +1);
             m_bounds[v].push_back(a);
             m_bounds_trail.push_back(v);
-            m_bool_var2bound.insert(bv, a);
+            m_bool_var2bound.setx(bv, a, nullptr);
 
             TRACE(arith, tout << "internalized " << bv << ": " << mk_pp(b, m) << "\n";);
         }
@@ -4635,8 +4713,8 @@ void theory_lra::collect_statistics(::statistics & st) const {
 theory_lra::inf_eps theory_lra::value(theory_var v) {
     return m_imp->value(v);
 }
-theory_lra::inf_eps theory_lra::maximize(theory_var v, expr_ref& blocker, bool& has_shared) {
-    return m_imp->maximize(v, blocker, has_shared);
+theory_lra::inf_eps theory_lra::maximize(theory_var v, expr_ref& blocker) {
+    return m_imp->maximize(v, blocker);
 }
 theory_var theory_lra::add_objective(app* term) {
     return m_imp->add_objective(term);

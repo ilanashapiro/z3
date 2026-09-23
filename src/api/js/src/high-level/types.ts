@@ -1617,6 +1617,16 @@ export interface Optimize<Name extends string = 'main'> {
   getUpper(index: number): Expr<Name>;
 
   /**
+   * Retrieve the lower bound as [infinity coefficient, rational, epsilon coefficient].
+   */
+  getLowerAsVector(index: number): AstVector<Name, Expr<Name>>;
+
+  /**
+   * Retrieve the upper bound as [infinity coefficient, rational, epsilon coefficient].
+   */
+  getUpperAsVector(index: number): AstVector<Name, Expr<Name>>;
+
+  /**
    * Retrieve the unsat core after a check that returned 'unsat'.
    * @returns An AstVector containing the subset of assumptions that caused UNSAT
    */
@@ -3630,6 +3640,9 @@ export interface Seq<Name extends string = 'main', ElemSort extends Sort<Name> =
 
   /** @category Operations */
   length(): Arith<Name>;
+
+  /** @category Operations */
+  power(exponent: Arith<Name> | number | bigint): Seq<Name, ElemSort>;
 
   /** @category Operations */
   at(index: Arith<Name> | number | bigint): Seq<Name, ElemSort>;

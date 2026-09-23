@@ -61,6 +61,7 @@ enum seq_op_kind {
     OP_SEQ_MAPI,           // Array[Int,A,B] -> Int -> Seq[A] -> Seq[B]
     OP_SEQ_FOLDL,          // Array[B,A,B] -> B -> Seq[A] -> B
     OP_SEQ_FOLDLI,         // Array[Int,B,A,B] -> Int -> B -> Seq[A] -> B
+    OP_SEQ_POWER,          // Seq -> Int -> Seq, s^n
  
     OP_RE_PLUS,
     OP_RE_STAR,
@@ -107,6 +108,7 @@ enum seq_op_kind {
     _OP_STRING_CHARAT,
     _OP_STRING_SUBSTR,
     _OP_STRING_STRIDOF,
+    _OP_STRING_POWER,
     _OP_REGEXP_EMPTY,
     _OP_REGEXP_FULL_CHAR,
     _OP_RE_IS_NULLABLE,
@@ -270,6 +272,8 @@ public:
     app* mk_skolem(symbol const& name, unsigned n, expr* const* args, sort* range);
     bool is_skolem(expr const* e) const { return is_app_of(e, m_fid, _OP_SEQ_SKOLEM); }
 
+    bool can_be_member(expr *seq, expr *regex);
+
     START_DISABLE_EXTRA_SEMI_WARNING;
     MATCH_BINARY(is_char_le);
     MATCH_UNARY(is_char2int);
@@ -311,6 +315,7 @@ public:
         app* mk_mapi(expr* f, expr* i, expr* s) const { expr* es[3] = { f, i, s }; return m.mk_app(m_fid, OP_SEQ_MAPI, 3, es); }
         app* mk_foldl(expr* f, expr* b, expr* s) const { expr* es[3] = { f, b, s }; return m.mk_app(m_fid, OP_SEQ_FOLDL, 3, es); }
         app* mk_foldli(expr* f, expr* i, expr* b, expr* s) const { expr* es[4] = { f, i, b, s }; return m.mk_app(m_fid, OP_SEQ_FOLDLI, 4, es); }
+        app* mk_power(expr* s, expr* n) const { expr* es[2] = { s, n }; return m.mk_app(m_fid, OP_SEQ_POWER, 2, es); }
 
         app* mk_substr(expr* a, expr* b, expr* c) const { expr* es[3] = { a, b, c }; return m.mk_app(m_fid, OP_SEQ_EXTRACT, 3, es); }
         app* mk_contains(expr* a, expr* b) const { expr* es[2] = { a, b }; return m.mk_app(m_fid, OP_SEQ_CONTAINS, 2, es); }
@@ -352,6 +357,7 @@ public:
         bool is_mapi(expr const* n)      const { return is_app_of(n, m_fid, OP_SEQ_MAPI); }
         bool is_foldl(expr const* n)      const { return is_app_of(n, m_fid, OP_SEQ_FOLDL); }
         bool is_foldli(expr const* n)      const { return is_app_of(n, m_fid, OP_SEQ_FOLDLI); }
+        bool is_power(expr const* n)       const { return is_app_of(n, m_fid, OP_SEQ_POWER); }
         bool is_extract(expr const* n)  const { return is_app_of(n, m_fid, OP_SEQ_EXTRACT); }
         bool is_contains(expr const* n) const { return is_app_of(n, m_fid, OP_SEQ_CONTAINS); }
         bool is_at(expr const* n)       const { return is_app_of(n, m_fid, OP_SEQ_AT); }
@@ -395,6 +401,11 @@ public:
             return (u.is_seq(s) && !u.is_string(s));
         }
 
+        // Decompose s into a constant length plus a non-negative combination of the lengths
+        // of its non-constant parts: |s| in cst + { sum c_i |v_i| }.  Returns the constant and
+        // the gcd of the multiplicities c_i (0 when s has no variable part).
+        std::pair<unsigned, unsigned> length_shape(expr *s);
+
         START_DISABLE_EXTRA_SEMI_WARNING;
         MATCH_BINARY(is_concat);
         MATCH_UNARY(is_length);
@@ -409,6 +420,7 @@ public:
         MATCH_TERNARY(is_mapi);
         MATCH_TERNARY(is_foldl);
         MATCH_QUATARY(is_foldli);
+        MATCH_BINARY(is_power);
         MATCH_BINARY(is_last_index);
         MATCH_TERNARY(is_replace);
         MATCH_TERNARY(is_replace_re);

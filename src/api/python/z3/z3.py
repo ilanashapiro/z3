@@ -4945,6 +4945,8 @@ def ArraySort(*sig):
     >>> AA = ArraySort(IntSort(), A)
     >>> AA
     Array(Int, Array(Int, Bool))
+    >>> ArraySort(IntSort(), BoolSort(), RealSort())
+    Array(Int, Bool, Real)
     """
     sig = _get_args(sig)
     if z3_debug():
@@ -8925,6 +8927,21 @@ class ApplyResult(Z3PPObject):
 #
 #########################################
 
+def num_simplifiers(ctx=None):
+    """Return the number of simplifiers supported by the given context."""
+    return Z3_get_num_simplifiers(_get_ctx(ctx).ref())
+
+
+def simplifier_name(i, ctx=None):
+    """Return the name of the i-th simplifier supported by the given context."""
+    return Z3_get_simplifier_name(_get_ctx(ctx).ref(), i)
+
+
+def simplifier_description(name, ctx=None):
+    """Return the description of the simplifier identified by name."""
+    return Z3_simplifier_get_descr(_get_ctx(ctx).ref(), name)
+
+
 class Simplifier:
     """Simplifiers act as pre-processing utilities for solvers.
     Build a custom simplifier and add it to a solver"""
@@ -11595,6 +11612,9 @@ class SeqRef(ExprRef):
     def __radd__(self, other):
         return Concat(other, self)
 
+    def __pow__(self, other):
+        return SeqPower(self, other)
+
     def __getitem__(self, i):
         if _is_int(i):
             i = IntVal(i, self.ctx)
@@ -11926,6 +11946,16 @@ def Length(s):
     """
     s = _coerce_seq(s)
     return ArithRef(Z3_mk_seq_length(s.ctx_ref(), s.as_ast()), s.ctx)
+
+def SeqPower(s, n):
+    """Concatenate the sequence 's' with itself 'n' times. It is the empty sequence for n <= 0
+    >>> p = SeqPower(StringVal("ab"), 2)
+    >>> simplify(p)
+    "abab"
+    """
+    s = _coerce_seq(s)
+    n = _py2expr(n, s.ctx)
+    return SeqRef(Z3_mk_seq_power(s.ctx_ref(), s.as_ast(), n.as_ast()), s.ctx)
 
 def SeqMap(f, s):
     """Map function 'f' over sequence 's'"""

@@ -205,8 +205,11 @@ namespace smt {
         TRACE(array, tout << "axiom 2a: #" << select->get_owner_id() << " #" << store->get_owner_id() << "\n";);
         SASSERT(is_select(select));
         SASSERT(is_store(store) || is_lambda(store->get_expr()));
-        if (assert_store_axiom2(store, select))
+        if (assert_store_axiom2(store, select)) {
             m_stats.m_num_axiom2a++;
+            if (is_lambda(store->get_expr()))
+                m_stats.m_num_select_lambda_axiom++;
+        }
     }
 
     bool theory_array::instantiate_axiom2b(enode * select, enode * store) {
@@ -215,6 +218,8 @@ namespace smt {
         SASSERT(is_store(store) || is_lambda(store->get_expr()));
         if (assert_store_axiom2(store, select)) {
             m_stats.m_num_axiom2b++;
+            if (is_lambda(store->get_expr()))
+                m_stats.m_num_select_lambda_axiom++;
             return true;
         }
         return false;
@@ -247,6 +252,14 @@ namespace smt {
                 ctx.internalize(arg, false);
         if (ctx.e_internalized(n)) 
             return false;
+        // defensive: mk_enode indexes args through app2enode and dereferences
+        // them unconditionally, so make sure every argument really has an
+        // enode before creating one for n (avoids access violations when an
+        // argument ends up only b_internalized, e.g. boolean args that were
+        // previously internalized in a gate context).
+        for (expr* arg : *n)
+            if (!ctx.e_internalized(arg))
+                ctx.mk_enode(arg, true, m.is_bool(arg), false);
 
         enode * e = ctx.mk_enode(n, false, false, true);
         if (!is_attached_to_var(e))

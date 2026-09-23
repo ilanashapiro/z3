@@ -23,25 +23,41 @@ Author:
 #include "ast/for_each_expr.h"
 #include "ast/rewriter/seq_regex_bisim.h"
 #include "ast/rewriter/expr_safe_replace.h"
+#include <numeric>
 
 namespace smt {
 
-    static unsigned u_gcd(unsigned a, unsigned b) {
-        while (b) {
-            unsigned t = a % b;
-            a = b;
-            b = t;
-        }
-        return a;
+    static seq::transition_mode monadic_transition_mode(symbol const& s) {
+        if (s == "light-ant")
+            return seq::transition_mode::light_antimirov_tm;
+        if (s == "brz")
+            return seq::transition_mode::brzozowski_tm;
+        throw default_exception("invalid seq.regex_transition_mode, use 'light-ant' or 'brz'");
+    }
+
+    static seq::monadic::orientation monadic_orientation(symbol const& s) {
+        if (s == "forward")
+            return seq::monadic::orientation::forward;
+        if (s == "reversed")
+            return seq::monadic::orientation::reversed;
+        if (s == "retry")
+            return seq::monadic::orientation::retry;
+        throw default_exception("invalid seq.regex_orientation, use 'forward', 'reversed' or 'retry'");
     }
 
     seq_regex::seq_regex(theory_seq& th):
         th(th),
         ctx(th.get_context()),
         m(th.get_manager()),
-        m_monadic(seq_rw(), ctx.get_trail_stack()),
+        m_monadic(seq_rw(), ctx.get_trail_stack(),
+                  monadic_transition_mode(ctx.get_fparams().m_seq_regex_transition_mode)),
+        m_monadic_model(th.get_manager()),
+        m_eq_approx(seq_rw(), 1u << 12),
         m_live_states(seq_rw(), seq::transition_mode::brzozowski_tm, 10000) {
         m_monadic.set_is_var([&th](expr *e) { return th.is_var(e); });
+        m_monadic.set_budget(ctx.get_fparams().m_seq_regex_budget);
+        m_monadic.set_orientation(monadic_orientation(ctx.get_fparams().m_seq_regex_orientation));
+        m_monadic.set_split_rounds(ctx.get_fparams().m_seq_regex_split);
     }
 
     seq_util& seq_regex::u() { return th.m_util; }
@@ -203,7 +219,7 @@ namespace smt {
     }
 
     bool seq_regex::model_len(expr* t, unsigned& len) {
-        obj_map<expr, expr*> const& model = m_monadic.get_model();
+        expr_substitution& model = m_monadic_model;
         ptr_vector<expr> todo;
         todo.push_back(t);
         len = 0;
@@ -227,8 +243,8 @@ namespace smt {
                 len += s.length();
                 continue;
             }
-            expr* w = nullptr;
-            if (model.find(e, w) && w != e) {     // variable: replace by its witness
+            expr* w = model.try_find(e);
+            if (w && w != e) {                    // variable: replace by its witness
                 todo.push_back(w);
                 continue;
             }
@@ -265,10 +281,6 @@ namespace smt {
         TRACE(seq_regex, tout << "monadic bound " << mk_pp(len, m)
                              << (k == bound_constraint::LO ? " >= " :
                                  k == bound_constraint::HI ? " <= " : " = ") << v << "\n";);
-    }
-
-    bool seq_regex::all_true(literal_vector const& lits) const {
-        return all_of(lits, [this](literal lit) { return l_true == ctx.get_assignment(lit); });
     }
 
     void seq_regex::add_core_literal(void* dep, literal_vector& lits, void*& deps) {
@@ -331,6 +343,64 @@ namespace smt {
         ++th.m_stats.m_regex_monadic_fallbacks;
     }
 
+    /**
+     * Refute a word equation without solving it: replace every part of both sides by an
+     * over-approximation of its values -- the asserted memberships as views, Sigma^* for
+     * everything else -- and intersect the two languages.  Every solution of the equation
+     * lies in both, so an empty intersection contradicts the equation together with the
+     * memberships whose views were used.
+     */
+    bool seq_regex::check_equation_conflict() {
+        if (m_monadic_memberships.empty() || th.m_eqs.empty())
+            return false;
+
+        // every term with an asserted membership is confined to its regex: one view per
+        // membership, which the module intersects when a term carries several.  The membership term is taken as it was asserted, not as the
+        // monadic solver expanded it: the expansion is refreshed in final_check, which
+        // runs after this, so its equalities may be stale here -- while the literal of
+        // the membership justifies the plain term on its own.
+        m_eq_approx.reset_views();
+        obj_map<expr, unsigned_vector> owner;         // constrained term -> memberships
+        for (unsigned idx = 0; idx < m_monadic_memberships.size(); ++idx) {
+            monadic_membership const& mem = m_monadic_memberships[idx];
+            // negative memberships reach us as complements, so an entry holds exactly
+            // when its literal is assigned true
+            if (ctx.get_assignment(mem.m_lit) != l_true)
+                continue;
+            unsigned_vector& mems = owner.insert_if_not_there(mem.m_s, unsigned_vector());
+            mems.push_back(idx);
+            m_eq_approx.add_view(mem.m_s, seq::view::membership(mem.m_re, m));
+        }
+        if (owner.empty())
+            return false;
+
+        for (auto const& e : th.m_eqs) {
+            if (e.ls.empty() || e.rs.empty())
+                continue;
+            expr_ref lhs(str().mk_concat(e.ls, e.ls[0]->get_sort()), m);
+            expr_ref rhs(str().mk_concat(e.rs, e.rs[0]->get_sort()), m);
+            if (m_eq_approx.check(lhs, rhs) != l_false)
+                continue;
+            // blame the equation and the memberships whose views the refutation used
+            literal_vector lits;
+            for (expr* t : m_eq_approx.used()) {
+                unsigned_vector mems;
+                if (owner.find(t, mems))
+                    for (unsigned idx : mems)
+                        lits.push_back(m_monadic_memberships[idx].m_lit);
+            }
+            if (!e.dep() && lits.empty())
+                continue;                 // nothing to justify a conflict with
+            TRACE(seq_regex, tout << "equation over-approximation refuted "
+                                  << mk_pp(lhs, m) << " = " << mk_pp(rhs, m) << "\n";
+                  m_eq_approx.display(tout););
+            ++th.m_stats.m_regex_eq_approx_unsat;
+            th.conflict_or_axiom(lits, e.dep());
+            return true;
+        }
+        return false;
+    }
+
     final_check_status seq_regex::final_check() {
         if (!th.use_monadic_regex() || m_monadic_memberships.empty())
             return FC_DONE;
@@ -363,11 +433,18 @@ namespace smt {
         collect_candidate_bounds(candidates);
         lbool result = l_undef;
         unsigned guard = candidates.size() + 1;
+        m_monadic_model.reset();
         while (true) {
             ++th.m_stats.m_regex_monadic_checks;
             result = m_monadic.check();
             if (result != l_true)
                 break;
+            // the bound checks below need values, and every round has a new solution
+            m_monadic_model.reset();
+            if (m_monadic.materialize_all(m_monadic_model) != l_true) {
+                result = l_undef;
+                break;
+            }
             bool progressed = false;
             for (auto const& cb : candidates) {
                 if (model_satisfies_bound(cb))
@@ -388,28 +465,7 @@ namespace smt {
             void* deps = nullptr;
             for (void* core_dep : m_monadic.core())
                 add_core_literal(core_dep, lits, deps);
-            if (all_true(lits)) {
-                // Every core literal is assigned true, so the negated core (together with the
-                // equalities collected while canonizing membership terms, carried in deps) is a
-                // legitimate theory conflict.
-                th.set_conflict(static_cast<theory_seq::dependency*>(deps), lits);
-            }
-            else {
-                // Some core literal is not currently assigned true, so this is not a legitimate
-                // theory conflict (see #10398): raising one would justify it with non-true
-                // literals. Assert the blocking clause instead -- the negation of the literals
-                // and canonization equalities that the monadic solver refuted.
-                for (unsigned i = 0; i < lits.size(); ++i)
-                    lits[i] = ~lits[i];
-                enode_pair_vector eqs;
-                literal_vector dep_lits;
-                th.linearize(static_cast<theory_seq::dependency*>(deps), eqs, dep_lits);
-                for (literal l : dep_lits)
-                    lits.push_back(~l);
-                for (auto const& [a, b] : eqs)
-                    lits.push_back(~th.mk_eq(a->get_expr(), b->get_expr(), false));
-                th.add_axiom(lits);
-            }
+            th.conflict_or_axiom(lits, static_cast<theory_seq::dependency*>(deps));
             return FC_CONTINUE;
         }
         if (result == l_undef) {
@@ -421,7 +477,7 @@ namespace smt {
         ++th.m_stats.m_regex_monadic_sat;
         ctx.push_trail(value_trail<unsigned>(m_monadic_assumption_generation));
         m_monadic_assumption_generation = m_monadic_generation;
-        for (auto const& [var, witness] : m_monadic.get_model()) {
+        for (auto const& [var, witness] : m_monadic_model.sub()) {
             enode* var_node = th.ensure_enode(var);
             enode* witness_node = th.ensure_enode(witness);
             if (var_node->get_root() == witness_node->get_root())
@@ -515,50 +571,17 @@ namespace smt {
             propagate_accept_legacy(lit, s, r);
     }
 
-    /*
-      Feed the semilinear length abstraction of r to arithmetic.
-
-      Lambda(r) over-approximates the length set of L(r) as an ultimately periodic set, so a
-      positive membership s in r entails  |s| mod period  in  residues.  Length *bounds*
-      alone cannot express this: (aaaa)* and (bbbbbb)* both have bounds [0, oo), yet
-      |z| in 4N together with |w| in 6N and |z| + 1 = |w| is refuted by 6n - 4m = 1, which
-      linear arithmetic closes with its gcd test once the residues are visible to it.
-
-      There are two ways to use the residues, and they have very different costs.
-
-      (1) A *local* refutation needs no arithmetic at all.  Relaxing every non-constant part
-      of s to an unconstrained non-negative length puts |s| in cst + g*N (see length_shape).
-      If no admissible residue is reachable there, the membership is false outright and we
-      say so directly.  This is the case that pays for itself: x ++ "e" ++ x in an
-      intersection of (Sigma^k)* forces 2|x| + 1 = 0 (mod even), which is unsatisfiable.
-
-      (2) Otherwise the residues can only be exploited by arithmetic, jointly with whatever
-      else constrains these lengths.  That requires materializing |s|, and materializing a
-      length term is *not* free: it drags theory_seq's length axioms in, and in monadic mode
-      the derived arithmetic bounds then feed collect_candidate_bounds, whose re-solve loop
-      re-invokes the monadic solver once per violated bound.  Measured on
-      split_membership_medium_sat_0046, that turns 1 monadic check into 152 and 48ms into a
-      timeout, on a goal master decides in 4 decisions with 4 arithmetic columns.  So the
-      axiom is emitted only when |s| is already internalized, i.e. when the goal reasons
-      about this length anyway and the residues genuinely add information to arithmetic.
-
-      The abstraction over-approximates, so both forms are implied by the membership and
-      neither can remove models.
-    */
     void seq_regex::propagate_length_residue(literal lit, expr* s, expr* r) {
         if (lit.sign())
             return;
-        auto info = re().get_info(r);
-        if (!info.is_known() || info.period <= 1)
-            return;
-
-        unsigned cst = 0, g = 0;
-        length_shape(s, cst, g);
-        if (!residue_reachable(info.period, info.residues, cst, g)) {
+        if (!u().can_be_member(s, r)) {
             th.add_axiom(~lit);
             return;
         }
-
+        auto info = re().get_info(r);
+        if (!info.is_known() || info.period <= 1)
+            return;
+        
         if (!lengths_are_live(s))
             return;
 
@@ -578,54 +601,7 @@ namespace smt {
         th.add_axiom(lits);
     }
 
-    void seq_regex::length_shape(expr* s, unsigned& cst, unsigned& g) {
-        cst = 0;
-        g = 0;
-        obj_map<expr, unsigned> mult;
-        ptr_vector<expr> todo;
-        todo.push_back(s);
-        while (!todo.empty()) {
-            expr* e = todo.back();
-            todo.pop_back();
-            expr* a1 = nullptr, *a2 = nullptr;
-            zstring val;
-            if (str().is_concat(e, a1, a2)) {
-                todo.push_back(a1);
-                todo.push_back(a2);
-            }
-            else if (str().is_empty(e))
-                continue;
-            else if (str().is_unit(e))
-                cst += 1;
-            else if (str().is_string(e, val))
-                cst += val.length();
-            else {
-                unsigned c = 0;
-                mult.find(e, c);
-                mult.insert(e, c + 1);
-            }
-        }
-        for (auto const& kv : mult)
-            g = u_gcd(g, kv.m_value);
-    }
 
-    bool seq_regex::residue_reachable(unsigned period, uint64_t residues, unsigned cst, unsigned g) {
-        unsigned c = cst % period;
-        // Lengths cst + g*k, k >= 0, cover exactly the residues congruent to cst modulo
-        // gcd(g, period); with g = 0 the only reachable length residue is cst itself.
-        unsigned d = g == 0 ? period : u_gcd(g, period);
-        for (unsigned i = 0; i < period; ++i) {
-            if (0 == (residues & (1ull << i)))
-                continue;
-            if (g == 0) {
-                if (i == c)
-                    return true;
-            }
-            else if ((i + period - c) % d == 0)
-                return true;
-        }
-        return false;
-    }
 
     bool seq_regex::lengths_are_live(expr* s) {
         if (th.has_length(s))
@@ -786,7 +762,7 @@ namespace smt {
         }
 
         if (info.interpreted) {
-            auto live = m_live_states.reachable_live(r);
+            auto live = m_live_states.reachable_live(seq::membership_view(r, m));
             if (live.is_dead()) {
                 STRACE(seq_regex_brief, tout << "(dead) ";);
                 th.add_axiom(~lit);
@@ -1020,8 +996,13 @@ namespace smt {
         // Uses canonical variable (:var 0) for the derivative element
         // Substitute (:var 0) with the actual element
         expr_ref der = seq_rw().mk_derivative(r);
-        var_subst subst(m);
-        der = subst(der, ele);
+        sort* seq_sort = nullptr, * elem_sort = nullptr;
+        VERIFY(u().is_re(r, seq_sort));
+        VERIFY(u().is_seq(seq_sort, elem_sort));
+        expr_ref v(m.mk_var(0, elem_sort), m);
+        expr_safe_replace subst(m);
+        subst.insert(v, ele);
+        subst(der, der);
 
         STRACE(seq_regex, tout << "derivative result: " << mk_pp(der, m) << std::endl;);
         STRACE(seq_regex_brief, tout << "d(" << state_str(r) << ")="

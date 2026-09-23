@@ -21,8 +21,9 @@ Revision History:
 #include <optional>
 #include "ast/seq_decl_plugin.h"
 #include "ast/rewriter/th_rewriter.h"
-#include "ast/rewriter/seq_skolem.h"
-#include "ast/rewriter/seq_eq_solver.h"
+#include "ast/seq/seq_skolem.h"
+#include "ast/seq/seq_parikh.h"
+#include "ast/seq/seq_eq_solver.h"
 #include "ast/ast_trail.h"
 #include "util/scoped_vector.h"
 #include "util/scoped_ptr_vector.h"
@@ -103,6 +104,7 @@ namespace smt {
                 m_map[r.v->get_id()] = r;
             }
             void add_trail(map_update op, expr* l, expr* r, dependency* d);
+            bool reduces_to(expr* r, expr* e) const;
         public:
             solution_map(ast_manager& m, dependency_manager& dm): 
                 m(m),  m_dm(dm), m_cache(m), m_lhs(m), m_rhs(m) {}
@@ -309,6 +311,7 @@ namespace smt {
             unsigned m_num_splits;
             unsigned m_num_reductions;
             unsigned m_check_length_coherence;
+            unsigned m_parikh;
             unsigned m_branch_variable;
             unsigned m_branch_nqs;
             unsigned m_solve_nqs;
@@ -325,6 +328,7 @@ namespace smt {
             unsigned m_regex_monadic_undef;
             unsigned m_regex_monadic_assumptions;
             unsigned m_regex_monadic_fallbacks;
+            unsigned m_regex_eq_approx_unsat;
         };
         typedef hashtable<rational, rational::hash_proc, rational::eq_proc> rational_set;
 
@@ -368,6 +372,12 @@ namespace smt {
         seq_axioms       m_ax;
         seq::eq_solver   m_eq;
         seq_regex        m_regex;
+        seq::parikh      m_parikh;
+        // encoding of the Parikh abstraction per equation, keyed by its two sides.
+        // m_parikh_pin keeps the keys and the encodings alive, three entries per equation
+        obj_pair_map<expr, expr, expr*> m_parikh_cache;
+        expr_ref_vector  m_parikh_pin;
+        static const unsigned m_max_parikh_eqs = 512;
         arith_value      m_arith_value;
         trail_stack      m_trail_stack;
         stats            m_stats;
@@ -437,6 +447,7 @@ namespace smt {
         bool branch_variable_eq();       // branch on a variable, by an alignment among variable boundaries.
         bool is_solved(); 
         bool check_length_coherence();
+        bool check_parikh();
         bool check_length_coherence0(expr* e);
         bool check_length_coherence(expr* e);
         bool check_fixed_length(bool is_zero, bool check_long_strings);
@@ -525,6 +536,7 @@ namespace smt {
         bool propagate_eq(dependency* dep, literal lit, expr* e1, expr* e2, bool add_to_eqs = true);
         void set_conflict(dependency* dep, literal_vector const& lits = literal_vector());
         void set_conflict(enode_pair_vector const& eqs, literal_vector const& lits);
+        void conflict_or_axiom(literal_vector& lits, dependency* dep);
 
         // self-validation
         void validate_axiom(literal_vector const& lits);
@@ -650,4 +662,3 @@ namespace smt {
         bool  get_length(expr* e, rational& r) override;
     };
 }
-

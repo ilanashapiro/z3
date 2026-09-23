@@ -268,6 +268,22 @@ namespace z3 {
            \brief Update global parameter \c param with Boolean \c value.
         */
         void set(char const * param, bool value) { Z3_update_param_value(m_ctx, param, value ? "true" : "false"); }
+
+        unsigned num_simplifiers() const {
+            unsigned r = Z3_get_num_simplifiers(m_ctx);
+            check_error();
+            return r;
+        }
+        std::string simplifier_name(unsigned i) const {
+            char const* r = Z3_get_simplifier_name(m_ctx, i);
+            check_error();
+            return r;
+        }
+        std::string simplifier_description(char const* name) const {
+            char const* r = Z3_simplifier_get_descr(m_ctx, name);
+            check_error();
+            return r;
+        }
         /**
            \brief Update global parameter \c param with Integer \c value.
         */
@@ -700,6 +716,7 @@ namespace z3 {
             bool operator==(iterator const& other) const noexcept {
                 return other.m_index == m_index;
             };
+
             bool operator!=(iterator const& other) const noexcept {
                 return other.m_index != m_index;
             };
@@ -718,6 +735,63 @@ namespace z3 {
         iterator end() const { return iterator(this, size()); }
         friend std::ostream & operator<<(std::ostream & out, ast_vector_tpl const & v) { out << Z3_ast_vector_to_string(v.ctx(), v); return out; }
         std::string to_string() const { return std::string(Z3_ast_vector_to_string(ctx(), m_vector)); }
+    };
+
+    /**
+       \brief A map from ASTs to ASTs.
+    */
+    class ast_map : public object {
+        Z3_ast_map m_map;
+        void init(Z3_ast_map m) {
+            Z3_ast_map_inc_ref(ctx(), m);
+            m_map = m;
+        }
+    public:
+        ast_map(context& c): object(c) { init(Z3_mk_ast_map(c)); }
+        ast_map(context& c, Z3_ast_map m): object(c) { init(m); }
+        ast_map(ast_map const& s): object(s) { init(s.m_map); }
+        ~ast_map() override { Z3_ast_map_dec_ref(ctx(), m_map); }
+        operator Z3_ast_map() const { return m_map; }
+        ast_map& operator=(ast_map const& s) {
+            Z3_ast_map_inc_ref(s.ctx(), s.m_map);
+            Z3_ast_map_dec_ref(ctx(), m_map);
+            object::operator=(s);
+            m_map = s.m_map;
+            return *this;
+        }
+        bool contains(ast const& k) const {
+            check_context(*this, k);
+            bool r = Z3_ast_map_contains(ctx(), m_map, k);
+            check_error();
+            return r;
+        }
+        ast find(ast const& k) const {
+            check_context(*this, k);
+            Z3_ast r = Z3_ast_map_find(ctx(), m_map, k);
+            check_error();
+            return ast(ctx(), r);
+        }
+        void insert(ast const& k, ast const& v) {
+            check_context(*this, k); check_context(*this, v);
+            Z3_ast_map_insert(ctx(), m_map, k, v);
+            check_error();
+        }
+        void erase(ast const& k) {
+            check_context(*this, k);
+            Z3_ast_map_erase(ctx(), m_map, k);
+            check_error();
+        }
+        void reset() { Z3_ast_map_reset(ctx(), m_map); check_error(); }
+        unsigned size() const {
+            unsigned r = Z3_ast_map_size(ctx(), m_map);
+            check_error();
+            return r;
+        }
+        ast_vector keys() const {
+            Z3_ast_vector r = Z3_ast_map_keys(ctx(), m_map);
+            check_error();
+            return ast_vector(ctx(), r);
+        }
     };
 
 
@@ -1630,6 +1704,12 @@ namespace z3 {
         }
         expr length() const {
             Z3_ast r = Z3_mk_seq_length(ctx(), *this);
+            check_error();
+            return expr(ctx(), r);
+        }
+        expr power(expr const& n) const {
+            check_context(*this, n);
+            Z3_ast r = Z3_mk_seq_power(ctx(), *this, n);
             check_error();
             return expr(ctx(), r);
         }
@@ -2856,6 +2936,54 @@ namespace z3 {
 
         std::string to_string() const { return m_model ? std::string(Z3_model_to_string(ctx(), m_model)) : "null"; }
     };
+
+    inline expr qe_lite(expr_vector const& vars, expr const& body) {
+        check_context(vars, body);
+        Z3_ast r = Z3_qe_lite(body.ctx(), vars, body);
+        body.check_error();
+        return expr(body.ctx(), r);
+    }
+
+    inline std::vector<Z3_app> to_apps(expr_vector const& bounds) {
+        std::vector<Z3_app> apps;
+        for (unsigned i = 0; i < bounds.size(); ++i) {
+            if (!Z3_is_app(bounds.ctx(), bounds[i]))
+                Z3_THROW(exception("model projection bounds must be applications"));
+            apps.push_back(Z3_to_app(bounds.ctx(), bounds[i]));
+        }
+        return apps;
+    }
+
+    inline expr qe_model_project(model const& m, expr_vector const& bounds, expr const& body) {
+        check_context(m, bounds); check_context(m, body);
+        std::vector<Z3_app> apps = to_apps(bounds);
+        Z3_ast r = Z3_qe_model_project(m.ctx(), m, bounds.size(), apps.data(), body);
+        m.check_error();
+        return expr(m.ctx(), r);
+    }
+
+    /**
+       \brief Project variables and write the introduced Skolem terms to \c map.
+    */
+    inline expr qe_model_project_skolem(model const& m, expr_vector const& bounds, expr const& body, ast_map& map) {
+        check_context(m, bounds); check_context(m, body); check_context(m, map);
+        std::vector<Z3_app> apps = to_apps(bounds);
+        Z3_ast r = Z3_qe_model_project_skolem(m.ctx(), m, bounds.size(), apps.data(), body, map);
+        m.check_error();
+        return expr(m.ctx(), r);
+    }
+
+    /**
+       \brief Project variables and write the introduced witnesses to \c map.
+    */
+    inline expr qe_model_project_with_witness(model const& m, expr_vector const& bounds, expr const& body, ast_map& map) {
+        check_context(m, bounds); check_context(m, body); check_context(m, map);
+        std::vector<Z3_app> apps = to_apps(bounds);
+        Z3_ast r = Z3_qe_model_project_with_witness(m.ctx(), m, bounds.size(), apps.data(), body, map);
+        m.check_error();
+        return expr(m.ctx(), r);
+    }
+
     inline std::ostream & operator<<(std::ostream & out, model const & m) { return out << m.to_string(); }
 
     class stats : public object {
@@ -3605,10 +3733,20 @@ namespace z3 {
             check_error();
             return expr(ctx(), r);
         }
+        expr_vector lower_as_vector(handle const& h) const {
+            Z3_ast_vector r = Z3_optimize_get_lower_as_vector(ctx(), m_opt, h.h());
+            check_error();
+            return expr_vector(ctx(), r);
+        }
         expr upper(handle const& h) {
             Z3_ast r = Z3_optimize_get_upper(ctx(), m_opt, h.h());
             check_error();
             return expr(ctx(), r);
+        }
+        expr_vector upper_as_vector(handle const& h) const {
+            Z3_ast_vector r = Z3_optimize_get_upper_as_vector(ctx(), m_opt, h.h());
+            check_error();
+            return expr_vector(ctx(), r);
         }
         expr_vector assertions() const { Z3_ast_vector r = Z3_optimize_get_assertions(ctx(), m_opt); check_error(); return expr_vector(ctx(), r); }
         expr_vector objectives() const { Z3_ast_vector r = Z3_optimize_get_objectives(ctx(), m_opt); check_error(); return expr_vector(ctx(), r); }
@@ -4024,6 +4162,8 @@ namespace z3 {
         case RTN: return expr(*this, Z3_mk_fpa_rtn(m_ctx));
         case RTZ: return expr(*this, Z3_mk_fpa_rtz(m_ctx));
         }
+        assert(false);
+        return expr(*this, Z3_mk_fpa_rne(m_ctx));
     }
 
     inline expr context::bool_val(bool b) { return b ? expr(*this, Z3_mk_true(m_ctx)) : expr(*this, Z3_mk_false(m_ctx)); }
@@ -5131,4 +5271,3 @@ namespace z3 {
 /**@}*/
 /**@}*/
 #undef Z3_THROW
-

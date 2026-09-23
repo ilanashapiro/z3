@@ -38,18 +38,14 @@ z3_add_component(rewriter
     quant_hoist.cpp
     recfun_rewriter.cpp
     rewriter.cpp
-    seq_axioms.cpp
-    seq_eq_solver.cpp
     seq_derive.cpp
     seq_subset.cpp
     seq_derive.cpp
-    seq_monadic.cpp
     seq_range_collapse.cpp
     seq_range_predicate.cpp
     seq_rewriter.cpp
     seq_regex_bisim.cpp
-    seq_regex_live.cpp
-    seq_skolem.cpp
+    seq_regex_witness.cpp
     term_enumeration.cpp
     th_rewriter.cpp
     value_sweep.cpp
@@ -61,3 +57,5 @@ z3_add_component(rewriter
     interval
     polynomial
 )
+
+add_subdirectory(bit_blaster)

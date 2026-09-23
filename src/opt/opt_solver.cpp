@@ -252,13 +252,43 @@ namespace opt {
         return true;
     }
 
+    // The finite part of inf_eps is a rational number, so it cannot store
+    // all algebraic numbers exactly. Use a rational lower or upper bound
+    // on the model value instead. Without this bound, geometric_search can
+    // report -oo for a satisfiable objective. Replace a
+    // lower endpoint n by floor(10^12*n)/10^12 and an upper endpoint n by
+    // ceil(10^12*n)/10^12. Each reduced denominator divides 10^12, so its
+    // dyadic valuation is at most 12. nra_solver omits generated bounds with
+    // valuation at least 24 to avoid large coefficients after clearing denominators.
+    bool model_value_bound(arith_util& a, expr* val, bool lower, rational& n) {
+        if (a.is_numeral(val, n))
+            return true;
+        if (a.is_irrational_algebraic_numeral(val)) {
+            rational const den = rational(10).expt(12);
+            if (lower) {
+                a.am().get_lower(a.to_irrational_algebraic_numeral(val), n, 40);
+                n = floor(n * den) / den;
+            }
+            else {
+                a.am().get_upper(a.to_irrational_algebraic_numeral(val), n, 40);
+                n = ceil(n * den) / den;
+            }
+            IF_VERBOSE(10, verbose_stream() << "(opt.model-value-bound :value "
+                       << mk_pp(val, a.get_manager())
+                       << " :side " << (lower ? "lower" : "upper")
+                       << " :bound " << n << ")\n");
+            return true;
+        }
+        return false;
+    }
+
     // If baseline_model evaluates objective i to a value better than the
     // current optimum, adopt that value and update the blocker.
     void opt_solver::update_from_baseline_model(unsigned i, model_ref& baseline_model, expr_ref& blocker) {
         arith_util a(m);
         rational r;
         expr_ref obj_val = (*baseline_model)(m_objective_terms.get(i));
-        if (a.is_numeral(obj_val, r) && inf_eps(r) > m_objective_values[i]) {
+        if (model_value_bound(a, obj_val, true, r) && inf_eps(r) > m_objective_values[i]) {
             m_objective_values[i] = inf_eps(r);
             if (!m_objective_models[i])
                 m_objective_models.set(i, baseline_model.get());
@@ -288,19 +318,14 @@ namespace opt {
        Return a predicate that blocks the current maximal value.
        
        The result of 'maximize' is post-processed. 
-       When maximization involves shared symbols the model produced
-       by local optimization does not necessarily satisfy combination 
-       constraints (it may not be a real model).
-       In this case, the model is post-processed (update_model 
-       causes an additional call to final_check to propagate theory equalities
-       when 'has_shared' is true).
+       The model produced by local optimization does not necessarily satisfy
+       combination constraints, so it is post-processed by update_model.
 
        Precondition: the state of the solver is satisfiable and such that a current model can be extracted.
        
     */
     bool opt_solver::maximize_objective(unsigned i, expr_ref& blocker) {
         smt::theory_var v = m_objective_vars[i];
-        bool has_shared = false;
         m_model = nullptr;
         blocker = nullptr;
         //
@@ -309,11 +334,12 @@ namespace opt {
         // Generally, the hint is not necessarily valid and has to be checked
         // relative to other theories.
         // 
-        inf_eps val = get_optimizer().maximize(v, blocker, has_shared);
+        inf_eps val = get_optimizer().maximize(v, blocker);
+        m_last_hint = val;
+        m_last_hint_status = l_undef;
         m_context.get_model(m_model);
         inf_eps val2;
-        has_shared = true;
-        TRACE(opt, tout << (has_shared?"has shared":"non-shared") << " " << val << " " << blocker << "\n";
+        TRACE(opt, tout << val << " " << blocker << "\n";
               if (m_model) tout << *m_model << "\n";);
         if (!m_objective_models[i]) 
             m_objective_models.set(i, m_model.get());
@@ -328,7 +354,7 @@ namespace opt {
         // true optimum and may not be achievable by any model.  Committing it
         // prematurely and then failing validation (check_bound below) would
         // leave m_objective_values holding an unachievable bound that callers
-        // such as optsmt::geometric_lex report as the optimum, together with a
+        // such as optsmt::geometric_search report as the optimum, together with a
         // model that does not attain it (issue #10028).  The value is only
         // committed after it has been validated, or replaced by the value of
         // an actual model in update_objective().
@@ -347,10 +373,11 @@ namespace opt {
         // current optimal.
         // 
         auto update_objective = [&]() {
+            arith_util a(m);
             rational r;
             expr_ref value = (*m_model)(m_objective_terms.get(i));
-            if (arith_util(m).is_numeral(value, r) && r > m_objective_values[i])
-                m_objective_values[i] = inf_eps(r);   
+            if (model_value_bound(a, value, true, r) && inf_eps(r) > m_objective_values[i])
+                m_objective_values[i] = inf_eps(r);
         };
 
         update_objective();
@@ -360,20 +387,23 @@ namespace opt {
         // check that "val" obtained from optimization hint is a valid bound.
         // 
         auto check_bound = [&]() {
-            SASSERT(has_shared);
-            return bound_value(i, val) && l_true == m_context.check(0, nullptr);
+            lbool r = bound_value(i, val);
+            if (r == l_true) 
+                r = m_context.check(0, nullptr);
+            m_last_hint_status = r;
+            return r == l_true;
         };
 
         if (!val.is_finite()) {
             // skip model updates
         }
-        else if (m_context.get_context().update_model(has_shared)) {
+        else if (m_context.get_context().update_model(true)) {
             TRACE(opt, tout << "updated\n";);
             m_model = nullptr;
             m_context.get_model(m_model);
             if (!m_model)
                 return false;
-            else if (!has_shared || val == current_objective_value(i))
+            else if (val == current_objective_value(i))
                 m_objective_models.set(i, m_model.get());
             else if (!check_bound())
                 return false;
@@ -381,6 +411,7 @@ namespace opt {
         else if (!check_bound())
             return false;
         m_objective_values[i] = val;
+        m_last_hint_status = l_true;
         TRACE(opt, { 
                 tout << "objective:     " << mk_pp(m_objective_terms.get(i), m) << "\n";
                 tout << "maximal value: " << val << "\n"; 
@@ -391,7 +422,7 @@ namespace opt {
         return true;
     }
 
-    bool opt_solver::bound_value(unsigned i, inf_eps& val) {
+    lbool opt_solver::bound_value(unsigned i, inf_eps& val) {
         push_core();
         expr_ref ge = mk_ge(i, val);
         assert_expr(ge);
@@ -402,7 +433,7 @@ namespace opt {
             m_objective_models.set(i, m_model.get());
         }
         pop_core(1);
-        return is_sat == l_true;
+        return is_sat;
     }
 
     lbool opt_solver::adjust_result(lbool r) {

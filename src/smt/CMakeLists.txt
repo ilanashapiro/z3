@@ -29,6 +29,7 @@ z3_add_component(smt
     smt_enode.cpp
     smt_farkas_util.cpp
     smt_for_each_relevant_expr.cpp
+    smt_ho_qsolver.cpp
     smt_implied_equalities.cpp
     smt_internalizer.cpp
     smt_justification.cpp
@@ -76,6 +77,7 @@ z3_add_component(smt
     uses_theory.cpp
     watch_list.cpp
   COMPONENT_DEPENDENCIES
+    seq
     solver_assertions
     bit_blaster
     cmd_context
@@ -92,3 +94,6 @@ z3_add_component(smt
     simplex
     substitution
 )
+
+add_subdirectory(proto_model)
+add_subdirectory(tactic)

@@ -27,17 +27,29 @@ SANITIZER_FLAGS = {
     "ubsan": "-fsanitize=undefined -fno-omit-frame-pointer",
 }
 
+MIN_CMAKE_VERSION = (3, 30)
+
 ASAN_ERROR = re.compile(r"ERROR:\s*AddressSanitizer:\s*(\S+)")
 UBSAN_ERROR = re.compile(r":\d+:\d+:\s*runtime error:\s*(.+)")
 LEAK_ERROR = re.compile(r"ERROR:\s*LeakSanitizer:")
 LOCATION = re.compile(r"(\S+\.(?:cpp|c|h|hpp)):(\d+)")
 
 
+def cmake_version() -> tuple:
+    """Return the installed cmake's (major, minor) version, or None if unknown."""
+    proc = subprocess.run(["cmake", "--version"], capture_output=True, text=True)
+    match = re.search(r"version (\d+)\.(\d+)", proc.stdout)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
 def check_dependencies():
     """Fail early if required build tools are not on PATH."""
     missing = []
     if not shutil.which("cmake"):
-        missing.append(("cmake", "sudo apt install cmake"))
+        missing.append(("cmake", "pip install --user 'cmake>=3.30'"))
+    elif (cmake_version() or (0, 0)) < MIN_CMAKE_VERSION:
+        # Z3 requires CMake >= 3.30; distro packages (e.g. apt's) are often older.
+        missing.append(("cmake >= 3.30", "pip install --user --upgrade 'cmake>=3.30'"))
     if not shutil.which("make"):
         missing.append(("make", "sudo apt install build-essential"))
 
@@ -66,16 +78,16 @@ def configure(build_dir: Path, sanitizer: str, repo_root: Path) -> bool:
     flags = SANITIZER_FLAGS[sanitizer]
     build_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "cmake", str(repo_root),
+        "cmake", "-S", str(repo_root), "-B", str(build_dir),
         f"-DCMAKE_C_FLAGS={flags}",
         f"-DCMAKE_CXX_FLAGS={flags}",
         f"-DCMAKE_EXE_LINKER_FLAGS={flags}",
         "-DCMAKE_BUILD_TYPE=Debug",
-        "-DZ3_BUILD_TEST=ON",
+        "-DZ3_BUILD_TEST_EXECUTABLES=ON",
     ]
     logger.info("configuring %s build in %s", sanitizer, build_dir)
     logger.debug("cmake command: %s", " ".join(cmd))
-    proc = subprocess.run(cmd, cwd=build_dir, capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
     if proc.returncode != 0:
         logger.error("cmake failed:\n%s", proc.stderr)
         return False
@@ -85,9 +97,10 @@ def configure(build_dir: Path, sanitizer: str, repo_root: Path) -> bool:
 def compile_tests(build_dir: Path) -> bool:
     """Compile the test-z3 target."""
     nproc = os.cpu_count() or 4
-    cmd = ["make", f"-j{nproc}", "test-z3"]
+    cmd = ["cmake", "--build", str(build_dir),
+           "--target", "test-z3", "--parallel", str(nproc)]
     logger.info("compiling test-z3 (%d parallel jobs)", nproc)
-    proc = subprocess.run(cmd, cwd=build_dir, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         logger.error("compilation failed:\n%s", proc.stderr[-2000:])
         return False

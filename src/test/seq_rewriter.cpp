@@ -20,11 +20,16 @@ Tests:
  23. (Σ*·S)* is flattened to () | Σ*·S
  24. Regex info tracks inferred maximal lengths
  25. Bag splitting ignores a whole-equation bag match
+ 26. mk_seq_reverse reverses concrete sequences and rejects non-concrete ones
+ 27. Solver: seq.nth_i on a concat with an ite of unequal-length-1 branches
+     followed by unit elements resolves to the correct element (regression
+     for a refutational soundness bug, issue #10621)
 --*/
 
 #include "ast/arith_decl_plugin.h"
 #include "ast/ast_pp.h"
 #include "ast/reg_decl_plugins.h"
+#include "ast/rewriter/seq_rewriter.h"
 #include "ast/rewriter/th_rewriter.h"
 #include "ast/seq_decl_plugin.h"
 #include "smt/smt_context.h"
@@ -34,6 +39,68 @@ Tests:
 // Build a single-char string literal expression.
 static expr_ref mk_str(ast_manager& m, seq_util& su, unsigned c) {
     return expr_ref(su.str.mk_string(zstring(c)), m);
+}
+
+static void tst_nested_sequence_assumptions() {
+    for (unsigned seed = 0; seed < 100; ++seed) {
+        for (bool reverse : {false, true}) {
+            ast_manager m;
+            reg_decl_plugins(m);
+            seq_util su(m);
+            arith_util a(m);
+            sort_ref seq_int(su.str.mk_seq(a.mk_int()), m);
+            sort_ref seq_seq_int(su.str.mk_seq(seq_int), m);
+            app_ref x(m.mk_fresh_const("x", seq_seq_int), m);
+            app_ref xp(m.mk_fresh_const("xp", seq_seq_int), m);
+            app_ref z(m.mk_fresh_const("z", seq_int), m);
+            app_ref n(m.mk_fresh_const("n", a.mk_int()), m);
+            app_ref l0(m.mk_fresh_const("l0", m.mk_bool_sort()), m);
+            app_ref l1(m.mk_fresh_const("l1", m.mk_bool_sort()), m);
+            app_ref l3(m.mk_fresh_const("l3", m.mk_bool_sort()), m);
+            app_ref l4(m.mk_fresh_const("l4", m.mk_bool_sort()), m);
+            app_ref l5(m.mk_fresh_const("l5", m.mk_bool_sort()), m);
+            expr_ref zero(a.mk_int(0), m), one(a.mk_int(1), m);
+            expr_ref empty(su.str.mk_empty(seq_int), m);
+            expr_ref empty_outer(su.str.mk_empty(seq_seq_int), m);
+            smt_params sp;
+            sp.m_random_seed = seed;
+            smt::context ctx(m, sp);
+
+            ctx.assert_expr(m.mk_not(m.mk_eq(
+                su.str.mk_unit(one), su.str.mk_substr(z, zero, one))));
+            ctx.assert_expr(m.mk_eq(l5, l0));
+            ctx.assert_expr(m.mk_not(m.mk_eq(
+                su.str.mk_substr(z, n, one), su.str.mk_unit(zero))));
+            ctx.assert_expr(m.mk_eq(
+                l4, m.mk_eq(x, su.str.mk_concat(xp, su.str.mk_unit(z)))));
+            expr* first[] = {l1, l3, l5};
+            expr* second[] = {l4};
+            if (reverse) {
+                ENSURE(ctx.check(1, second) == l_true);
+                ENSURE(ctx.check(3, first) == l_true);
+            }
+            else {
+                ENSURE(ctx.check(3, first) == l_true);
+                ENSURE(ctx.check(1, second) == l_true);
+            }
+
+            ctx.push();
+            ctx.assert_expr(m.mk_eq(x, empty_outer));
+            ENSURE(ctx.check(1, second) == l_false);
+            ctx.pop(1);
+            ENSURE(ctx.check(1, second) == l_true);
+
+            ctx.push();
+            ctx.assert_expr(m.mk_eq(xp, empty_outer));
+            ctx.assert_expr(m.mk_eq(z, empty));
+            ENSURE(ctx.check(1, second) == l_true);
+            ctx.push();
+            ctx.assert_expr(m.mk_not(m.mk_eq(su.str.mk_nth(x, zero), empty)));
+            ENSURE(ctx.check(1, second) == l_false);
+            ctx.pop(2);
+            ENSURE(ctx.check(1, second) == l_true);
+        }
+    }
 }
 
 void tst_seq_rewriter() {
@@ -499,5 +566,115 @@ void tst_seq_rewriter() {
                    (i_inner_star.residues & (1ull << (n % i_inner_star.period))));
     }
 
+    // 26. seq_rewriter::mk_seq_reverse on concrete sequences.
+    {
+        seq_rewriter sr(m);
+        expr_ref result(m);
+        auto unit = [&](unsigned c) { return expr_ref(su.str.mk_unit(su.str.mk_char(c)), m); };
+        auto cat = [&](expr_ref_vector const& es) {
+            return expr_ref(su.str.mk_concat(es, str_sort), m);
+        };
+
+        // A string literal is a sequence of characters, not an opaque element: reversing
+        // it has to reverse its characters.
+        expr_ref abc_str(su.str.mk_string("abc"), m);
+        expr_ref cba_str(su.str.mk_string("cba"), m);
+        ENSURE(sr.mk_seq_reverse(abc_str, result));
+        ENSURE(result == cba_str);
+
+        // A concatenation of units comes back in the opposite order.
+        expr_ref_vector abc(m);
+        abc.push_back(unit('a')).push_back(unit('b')).push_back(unit('c'));
+        expr_ref_vector cba(m);
+        cba.push_back(unit('c')).push_back(unit('b')).push_back(unit('a'));
+        ENSURE(sr.mk_seq_reverse(cat(abc), result));
+        ENSURE(result == cat(cba));
+
+        // Literals and units mix, and each literal is reversed in place.
+        expr_ref_vector ab_c(m);
+        ab_c.push_back(expr_ref(su.str.mk_string("ab"), m)).push_back(unit('c'));
+        expr_ref_vector c_ba(m);
+        c_ba.push_back(unit('c')).push_back(expr_ref(su.str.mk_string("ba"), m));
+        ENSURE(sr.mk_seq_reverse(cat(ab_c), result));
+        ENSURE(result == cat(c_ba));
+
+        // Nesting on either side flattens to the same reversal.
+        expr_ref_vector ab(m), inner(m);
+        ab.push_back(unit('a')).push_back(unit('b'));
+        inner.push_back(cat(ab)).push_back(unit('c'));
+        ENSURE(sr.mk_seq_reverse(cat(inner), result));
+        ENSURE(result == cat(cba));
+
+        // The empty sequence and a single element are their own reverse.
+        expr_ref empty_seq(su.str.mk_empty(str_sort), m);
+        ENSURE(sr.mk_seq_reverse(empty_seq, result));
+        ENSURE(result == empty_seq);
+        ENSURE(sr.mk_seq_reverse(unit('a'), result));
+        ENSURE(result == unit('a'));
+
+        // Sequences have no reverse operator, so a non-concrete element has no reverse to
+        // return. Reporting failure is the only sound answer; returning the element
+        // unchanged would claim rev(x) = x.
+        expr_ref x(m.mk_const(symbol("x"), str_sort), m);
+        ENSURE(!sr.mk_seq_reverse(x, result));
+        expr_ref_vector ax(m);
+        ax.push_back(unit('a')).push_back(x);
+        ENSURE(!sr.mk_seq_reverse(cat(ax), result));
+    }
+
+    // -----------------------------------------------------------------------
+    // 27. Regression for a refutational soundness bug (issue #10621): a
+    //     (Seq Int) equation whose right-hand side is
+    //         seq.extract(seq.unit(seq.len y) ++ seq.unit(ite x 0 1) ++
+    //                      seq.unit(1) ++ seq.unit(0), 2, 2)
+    //     is satisfiable (e.g. x = true, y = seq.unit(1) ++ seq.unit(0)),
+    //     because the extracted region never depends on the self-referential
+    //     seq.len(y) unit. seq_rewriter::mk_seq_nth_i used to mis-track the
+    //     character offset when a concat contains an ite-branch element
+    //     whose length differs from 1 followed by further unit elements: it
+    //     compared the absolute target offset against the loop index over
+    //     "as" entries instead of the true cumulative character position,
+    //     picking the wrong unit and asserting a false equality axiom, which
+    //     made the (satisfiable) formula UNSAT.
+    // -----------------------------------------------------------------------
+    {
+        arith_util a_util(m);
+        sort* int_sort = a_util.mk_int();
+        sort* seq_int_sort = su.str.mk_seq(int_sort);
+        app_ref x(m.mk_fresh_const("x", m.mk_bool_sort()), m);
+        app_ref y(m.mk_fresh_const("y", seq_int_sort), m);
+        expr_ref len_y(su.str.mk_length(y), m);
+        expr_ref unit_len_y(su.str.mk_unit(len_y), m);
+        expr_ref unit_ite(su.str.mk_unit(m.mk_ite(x, a_util.mk_int(0), a_util.mk_int(1))), m);
+        expr_ref unit_1(su.str.mk_unit(a_util.mk_int(1)), m);
+        expr_ref unit_0(su.str.mk_unit(a_util.mk_int(0)), m);
+        expr_ref_vector concat_args(m);
+        concat_args.push_back(unit_len_y).push_back(unit_ite).push_back(unit_1).push_back(unit_0);
+        expr_ref base(su.str.mk_concat(concat_args, seq_int_sort), m);
+        expr_ref extracted(su.str.mk_substr(base, a_util.mk_int(2), a_util.mk_int(2)), m);
+
+        smt_params sp;
+        smt::context ctx(m, sp);
+        ctx.assert_expr(m.mk_eq(y, extracted));
+        lbool res = ctx.check();
+        std::cout << "self-referential seq.extract with ite branch sat: " << res << "\n";
+        ENSURE(res == l_true);
+    }
+
+    // A sequence of length at most one contains only itself and the empty sequence.
+    {
+        arith_util a_util(m);
+        app_ref x(m.mk_fresh_const("x", str_sort), m);
+        app_ref y(m.mk_fresh_const("y", str_sort), m);
+        expr_ref at(su.str.mk_at(x, a_util.mk_int(0)), m);
+        expr_ref contains(su.str.mk_contains(at, y), m);
+        expr_ref expected(
+            m.mk_or(su.str.mk_is_empty(y), m.mk_eq(at, y)), m);
+        rw(contains);
+        rw(expected);
+        ENSURE(contains == expected);
+    }
+
+    tst_nested_sequence_assumptions();
     std::cout << "tst_seq_rewriter: all tests passed\n";
 }

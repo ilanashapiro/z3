@@ -266,6 +266,12 @@ void mpf_manager::set(mpf & o, unsigned ebits, unsigned sbits, mpf_rounding_mode
         // Check that 1.0 <= sig < 2.0
         SASSERT((m_mpq_manager.le(1, sig) && m_mpq_manager.lt(sig, 2)));
 
+        if (m_mpz_manager.is_int64(exp) &&
+            m_mpz_manager.get_int64(exp) > mk_max_exp(ebits)) {
+            mk_round_inf(rm, o);
+            return;
+        }
+
         scoped_mpz p(m_mpq_manager);
         scoped_mpq t(m_mpq_manager), sq(m_mpq_manager);
         m_mpz_manager.power(2, sbits + 3 - 1, p);
@@ -1193,14 +1199,22 @@ void mpf_manager::to_sbv_mpq(mpf_rounding_mode rm, const mpf & x, scoped_mpq & o
     SASSERT(t.exponent() < INT_MAX);
 
     m_mpz_manager.set(z, t.significand());
-    mpf_exp_t e = (mpf_exp_t)t.exponent() - t.sbits() + 1;
-    if (e < 0) {
-        bool last = m_mpz_manager.is_odd(z), round = false, sticky = false;
-        for (; e != 0; ++e) {
-            m_mpz_manager.machine_div2k(z, 1);
-            sticky |= round;
-            round = last;
-            last = m_mpz_manager.is_odd(z);
+    mpf_exp_t exponent = t.exponent();
+    if (exponent < static_cast<mpf_exp_t>(t.sbits()) - 1) {
+        uint64_t shift = exponent < 0
+            ? static_cast<uint64_t>(-(exponent + 1)) + t.sbits()
+            : static_cast<uint64_t>(t.sbits() - 1) - static_cast<uint64_t>(exponent);
+        bool last = false, round = false, sticky = false;
+        if (!m_mpz_manager.is_zero(z)) {
+            unsigned bits = m_mpz_manager.bitsize(z);
+            last = shift < bits && m_mpz_manager.get_bit(z, static_cast<unsigned>(shift));
+            round = shift <= bits && m_mpz_manager.get_bit(z, static_cast<unsigned>(shift - 1));
+            sticky = shift > 1 &&
+                static_cast<uint64_t>(m_mpz_manager.power_of_two_multiple(z)) < shift - 1;
+            if (shift >= bits)
+                m_mpz_manager.set(z, 0);
+            else
+                m_mpz_manager.machine_div2k(z, static_cast<unsigned>(shift));
         }
         bool inc = false;
         switch (rm) {
@@ -1217,7 +1231,7 @@ void mpf_manager::to_sbv_mpq(mpf_rounding_mode rm, const mpf & x, scoped_mpq & o
                   " sticky=" << sticky << " inc=" << inc << std::endl; );
     }
     else
-        m_mpz_manager.mul2k(z, (unsigned) e);
+        m_mpz_manager.mul2k(z, static_cast<unsigned>(exponent - t.sbits() + 1));
 
     m_mpq_manager.set(o, z);
     if (x.sign) m_mpq_manager.neg(o);

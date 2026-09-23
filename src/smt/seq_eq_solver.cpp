@@ -1063,6 +1063,45 @@ bool theory_seq::check_length_coherence0(expr* e) {
     return false;
 }
 
+/**
+   Parikh abstraction: for every current equation propagate that both sides agree on the
+   number of occurrences of each short factor, split by the residue of the position the
+   factor starts at.  The encoding of an equation is built once and kept, keyed by its two
+   sides; asserting it again is cheap and happens after every backtrack.
+*/
+bool theory_seq::check_parikh() {
+    if (get_fparams().m_seq_parikh_k == 0)
+        return false;
+    for (auto const& e : m_eqs) {
+        if (e.ls.empty() || e.rs.empty())
+            continue;
+        sort* srt = e.ls.get(0)->get_sort();
+        expr_ref l(m_util.str.mk_concat(e.ls, srt), m);
+        expr_ref r(m_util.str.mk_concat(e.rs, srt), m);
+        expr* obs = nullptr;
+        if (!m_parikh_cache.find(l, r, obs)) {
+            if (m_parikh_pin.size() >= 3 * m_max_parikh_eqs)
+                continue;
+            expr_ref_vector defs(m), eqs(m);
+            expr_ref enc(m.mk_true(), m);
+            if (m_parikh(e.ls, e.rs, defs, eqs)) {
+                defs.append(eqs);
+                enc = mk_and(defs);
+            }
+            obs = enc;
+            m_parikh_cache.insert(l, r, obs);
+            m_parikh_pin.push_back(l);
+            m_parikh_pin.push_back(r);
+            m_parikh_pin.push_back(obs);
+        }
+        if (m.is_true(obs))
+            continue;
+        if (propagate_lit(e.dep(), 0, nullptr, mk_literal(obs)))
+            return true;
+    }
+    return false;
+}
+
 bool theory_seq::check_length_coherence() {
 
     for (expr* l : m_length) {
@@ -1147,12 +1186,18 @@ struct remove_obj_pair_map : public trail {
 bool theory_seq::solve_nth_eq(expr_ref_vector const& ls, expr_ref_vector const& rs, dependency* deps) {
     expr* s = nullptr, *idx = nullptr;
     if (ls.size() == 1 && m_util.str.is_nth_i(ls[0], s, idx)) {
+        expr_ref rhs = mk_concat(rs.size(), rs.data(), ls[0]->get_sort());
+        bool is_explicit_word = true;
+        for (expr* r : rs)
+            is_explicit_word &= m_util.str.is_unit(r) || m_util.str.is_string(r);
+        // Decomposing s can recreate this equation without solving the element.
+        if (is_explicit_word)
+            return add_solution(ls[0], rhs, deps);
         rational r;
         bool idx_is_zero = m_autil.is_numeral(idx, r) && r.is_zero();
         expr_ref_vector ls1(m), rs1(m); 
         expr_ref idx1(m_autil.mk_add(idx, m_autil.mk_int(1)), m);
         m_rewrite(idx1);
-        expr_ref rhs = mk_concat(rs.size(), rs.data(), ls[0]->get_sort());
         if (m_nth_eq2_cache.contains(std::make_pair(rhs, ls[0])))
             return false;
         m.inc_ref(rhs);

@@ -22,6 +22,7 @@ Authors:
 #include "ast/rewriter/seq_rewriter.h"
 #include "ast/rewriter/seq_regex_bisim.h"
 #include "ast/rewriter/seq_range_collapse.h"
+#include "ast/rewriter/seq_regex_witness.h"
 #include "ast/arith_decl_plugin.h"
 #include "ast/array_decl_plugin.h"
 #include "ast/ast_pp.h"
@@ -36,6 +37,7 @@ Authors:
 void seq_rewriter::updt_params(params_ref const & p) {
     seq_rewriter_params sp(p);
     m_coalesce_chars = sp.coalesce_chars();
+    m_max_power_expansion = sp.max_power_expansion();
 }
 
 void seq_rewriter::get_param_descrs(param_descrs & r) {
@@ -264,6 +266,10 @@ br_status seq_rewriter::mk_app_core(func_decl * f, unsigned num_args, expr * con
         SASSERT(num_args == 1);
         st = mk_seq_length(args[0], result);
         break;
+    case OP_SEQ_POWER:
+        SASSERT(num_args == 2);
+        st = mk_seq_power(args[0], args[1], result);
+        break;
     case OP_SEQ_EXTRACT:
         SASSERT(num_args == 3);
         st = mk_seq_extract(args[0], args[1], args[2], result);
@@ -467,6 +473,36 @@ br_status seq_rewriter::mk_seq_concat(expr* a, expr* b, expr_ref& result) {
     return BR_FAILED;
 }
 
+bool seq_rewriter::mk_seq_reverse(expr* s, expr_ref& result) {
+    ptr_vector<expr> elems, todo;
+    todo.push_back(s);
+    while (!todo.empty()) {
+        expr* e = todo.back();
+        todo.pop_back();
+        if (str().is_concat(e)) {             // str.++ is n-ary; pushing the arguments left
+            app* a = to_app(e);               // to right pops them right to left, which is
+            for (expr* arg : *a)              // the order the reversed sequence needs
+                todo.push_back(arg);
+            continue;
+        }
+        if (str().is_empty(e))
+            continue;
+        elems.push_back(e);
+    }
+    zstring zs;
+    expr_ref_vector es(m());
+    for (expr* e : elems) {
+        if (str().is_unit(e))
+            es.push_back(e);                  // a one-element sequence is its own reverse
+        else if (str().is_string(e, zs))
+            es.push_back(str().mk_string(zs.reverse()));
+        else
+            return false;                     // there is no sequence-level reverse operator,
+    }                                         // so a non-concrete element has no reverse here
+    result = str().mk_concat(es, s->get_sort());
+    return true;
+}
+
 br_status seq_rewriter::mk_seq_length(expr* a, expr_ref& result) {
     zstring b;
     rational r;
@@ -509,6 +545,11 @@ br_status seq_rewriter::mk_seq_length(expr* a, expr_ref& result) {
         result = str().mk_length(z);
         return BR_REWRITE1;
     } 
+    // len(s^n) = n * len(s) for n >= 0
+    if (str().is_power(a, x, y) && m_autil.is_numeral(y, r) && r >= 0) {
+        result = m_autil.mk_mul(y, str().mk_length(x));
+        return BR_REWRITE2;
+    }
     // len(extract(x, 0, z)) = min(z, len(x))
     if (str().is_extract(a, x, y, z) && 
         m_autil.is_numeral(y, r) && r.is_zero() &&
@@ -518,6 +559,54 @@ br_status seq_rewriter::mk_seq_length(expr* a, expr_ref& result) {
         return BR_REWRITE_FULL;
     }
     return BR_FAILED;
+}
+
+/**
+   s^n = "" if n <= 0
+   s^n = s ++ ... ++ s (n copies) if n > 0
+
+   Exponents above rewriter.max_power_expansion are left to the theory solver.
+*/
+br_status seq_rewriter::mk_seq_power(expr* a, expr* b, expr_ref& result) {
+    expr* s = nullptr, *k = nullptr;
+    rational n, kv;
+    if (str().is_empty(a)) {
+        result = a;
+        return BR_DONE;
+    }
+    bool is_num = m_autil.is_numeral(b, n);
+    if (is_num && !n.is_pos()) {
+        result = str().mk_empty(a->get_sort());
+        return BR_DONE;
+    }
+    if (is_num && n.is_one()) {
+        result = a;
+        return BR_DONE;
+    }
+    // (s^k)^n = s^(k*n) whenever k or n is a positive numeral
+    if (str().is_power(a, s, k) &&
+        (is_num || (m_autil.is_numeral(k, kv) && kv.is_pos()))) {
+        result = str().mk_power(s, m_autil.mk_mul(k, b));
+        return BR_REWRITE_FULL;
+    }
+    if (!is_num || n > rational(m_max_power_expansion))
+        return BR_FAILED;
+    unsigned v = n.get_unsigned();
+    zstring t;
+    if (str().is_string(a, t)) {
+        if (!(n * rational(t.length())).is_unsigned())
+            return BR_FAILED;
+        zstring r = t;
+        for (unsigned i = 1; i < v; ++i)
+            r += t;
+        result = str().mk_string(r);
+        return BR_DONE;
+    }
+    expr_ref_vector es(m());
+    for (unsigned i = 0; i < v; ++i)
+        es.push_back(a);
+    result = str().mk_concat(es, a->get_sort());
+    return BR_REWRITE_FULL;
 }
 
 /*
@@ -838,6 +927,7 @@ br_status seq_rewriter::mk_seq_extract(expr* a, expr* b, expr* c, expr_ref& resu
         return BR_DONE;
     }
 
+
     rational len_a;
     if (constantPos && max_length(a, len_a) && len_a <= pos) {
         result = str().mk_empty(a_sort);
@@ -847,7 +937,7 @@ br_status seq_rewriter::mk_seq_extract(expr* a, expr* b, expr* c, expr_ref& resu
     constantPos &= pos.is_unsigned();
     constantLen &= len.is_unsigned();
 
-    if (constantPos && constantLen && len == 1) {
+    if (constantLen && len == 1) {
         result = str().mk_at(a, b);
         return BR_REWRITE1;
     }
@@ -1101,6 +1191,12 @@ br_status seq_rewriter::mk_seq_contains(expr* a, expr* b, expr_ref& result) {
 
     if (as.empty()) {
         result = str().mk_is_empty(b);
+        return BR_REWRITE2;
+    }
+
+    auto [bounded_a, max_a] = max_length(a);
+    if (bounded_a && max_a <= 1) {
+        result = m().mk_or(str().mk_is_empty(b), m().mk_eq(a, b));
         return BR_REWRITE2;
     }
 
@@ -1370,25 +1466,27 @@ br_status seq_rewriter::mk_seq_nth_i(expr* a, expr* b, expr_ref& result) {
     str().get_concat_units(a, as);
 
     expr* cond = nullptr, *el = nullptr, *th = nullptr;
+    unsigned pos = 0;
     for (unsigned i = 0; i < as.size(); ++i) {
         expr* a = as.get(i), *u = nullptr;
         if (str().is_unit(a, u)) {
-            if (offset == i) {
+            if (offset == pos) {
                 result = u;
                 return BR_DONE;
             }
+            ++pos;
             continue;
         }
         else if (m().is_ite(a, cond, th, el)) {
             auto [bounded, len1] = min_length(a);
             if (!bounded)
                 break;
-            if (i + len1 < offset) {
-                offset -= len1;
+            if (pos + len1 <= offset) {
+                pos += len1;
                 continue;
             }
             expr_ref idx(m());
-            idx = m_autil.mk_int(offset - i);
+            idx = m_autil.mk_int(offset - pos);
             th = str().mk_nth_i(th, idx);
             el = str().mk_nth_i(el, idx);
             result = m().mk_ite(cond, th, el);
@@ -3384,76 +3482,10 @@ br_status seq_rewriter::mk_str_in_regexp(expr* a, expr* b, expr_ref& result) {
             return BR_REWRITE_FULL;
     }
 
-#if 0
-    
-    expr_ref hd(m()), tl(m());
-    if (get_head_tail(a, hd, tl)) {
-        //result = re().mk_in_re(tl, re().mk_derivative(hd, b));
-        //result = re().mk_in_re(tl, mk_derivative(hd, b));
-        result = mk_in_antimirov(tl, mk_antimirov_deriv(hd, b, m().mk_true()));
-        return BR_REWRITE_FULL;
+    if (!u().can_be_member(a, b)) {
+        result = m().mk_false();
+        return BR_DONE;
     }
-    
-    if (get_head_tail_reversed(a, hd, tl)) {
-        result = re().mk_reverse(re().mk_derivative(tl, re().mk_reverse(b)));
-        result = re().mk_in_re(hd, result);
-        return BR_REWRITE_FULL;
-    }
-
-    if (get_re_head_tail(b, hd, tl)) {
-        SASSERT(re().min_length(hd) == re().max_length(hd));
-        expr_ref len_hd(m_autil.mk_int(re().min_length(hd)), m()); 
-        expr_ref len_a(str().mk_length(a), m());
-        expr_ref len_tl(m_autil.mk_sub(len_a, len_hd), m());
-        auto ge_len = m_autil.mk_ge(len_a, len_hd);
-        auto prefix = re().mk_in_re(str().mk_substr(a, zero(), len_hd), hd);
-        auto suffix = re().mk_in_re(str().mk_substr(a, len_hd, len_tl), tl);
-        result = m().mk_and(ge_len, prefix, suffix);
-        return BR_REWRITE_FULL;
-    }
-    if (get_re_head_tail_reversed(b, hd, tl)) {
-        SASSERT(re().min_length(tl) == re().max_length(tl));
-        expr_ref len_tl(m_autil.mk_int(re().min_length(tl)), m());
-        expr_ref len_a(str().mk_length(a), m());
-        expr_ref len_hd(m_autil.mk_sub(len_a, len_tl), m());
-        expr* s = nullptr;
-        auto ge_len = m_autil.mk_ge(len_a, len_tl);
-        auto prefix = re().mk_in_re(str().mk_substr(a, zero(), len_hd), hd);
-        auto tail_seq = str().mk_substr(a, len_hd, len_tl);
-        auto tail = (re().is_to_re(tl, s) ? m().mk_eq(s, tail_seq) : re().mk_in_re(tail_seq, tl));
-        result = m().mk_and(ge_len, prefix, tail);
-        return BR_REWRITE_FULL;
-    }
-
-#endif
-
-#if 0
-    unsigned len = 0;
-    if (has_fixed_length_constraint(b, len)) {
-        auto _seq0 = m_autil.mk_int(len);
-        auto _seq1 = str().mk_length(a);
-        expr_ref len_lim(m().mk_eq(_seq0, _seq1), m());
-        // this forces derivatives. Perhaps not a good thing for intersections.
-        // alternative is to hoist out the smallest length constraining regex
-        // and keep the result for the sequence expression that is kept without rewriting
-        // or alternative is to block rewriting on this expression in some way.
-        expr_ref_vector args(m());
-        for (unsigned i = 0; i < len; ++i) {
-            args.push_back(str().mk_unit(str().mk_nth_i(a, m_autil.mk_int(i))));
-        }
-        expr_ref in_re(re().mk_in_re(str().mk_concat(args, a->get_sort()), b), m());
-        result = m().mk_and(len_lim, in_re);
-        return BR_REWRITE_FULL;
-    }
-#endif
-
-    // Disabled rewrites
-    if (false && re().is_complement(b, b1)) {
-        result = m().mk_not(re().mk_in_re(a, b1));
-        return BR_REWRITE2;
-    }
-    if (false && rewrite_contains_pattern(a, b, result))
-        return BR_REWRITE_FULL;
 
     return BR_FAILED;
 }
@@ -3488,6 +3520,18 @@ bool seq_rewriter::lift_str_from_to_re(expr* r, expr_ref& result)
 }
 
 br_status seq_rewriter::mk_str_to_regexp(expr* a, expr_ref& result) {
+    expr* s = nullptr, *i = nullptr;
+    if (str().is_at(a, s, i)) {
+        expr_ref valid(m().mk_and(
+            m_autil.mk_ge(i, zero()),
+            m_autil.mk_lt(i, str().mk_length(s))), m());
+        expr_ref nth(str().mk_unit(str().mk_nth_i(s, i)), m());
+        result = m().mk_ite(
+            valid,
+            re().mk_to_re(nth),
+            re().mk_to_re(str().mk_empty(a->get_sort())));
+        return BR_REWRITE_FULL;
+    }
     return BR_FAILED;
 }
 
@@ -4576,6 +4620,17 @@ br_status seq_rewriter::mk_eq_core(expr * l, expr * r, expr_ref & result) {
     bool changed = false;
     if (reduce_eq_empty(l, r, result)) 
         return BR_REWRITE_FULL;
+    // s^n = s^k <=> s = "" or (n <= 0 and k <= 0) or (0 < n = k)
+    expr* s1 = nullptr, *n1 = nullptr, *s2 = nullptr, *n2 = nullptr;
+    if (str().is_power(l, s1, n1) && str().is_power(r, s2, n2) && s1 == s2) {
+        expr_ref emp(str().mk_empty(s1->get_sort()), m());
+        expr_ref_vector fmls(m());
+        fmls.push_back(m().mk_eq(s1, emp));
+        fmls.push_back(m().mk_and(m_autil.mk_le(n1, zero()), m_autil.mk_le(n2, zero())));
+        fmls.push_back(m().mk_and(m_autil.mk_lt(zero(), n1), m_autil.mk_lt(zero(), n2), m().mk_eq(n1, n2)));
+        result = m().mk_or(fmls);
+        return BR_REWRITE_FULL;
+    }
 
     // a, b are unit-length ground strings => replace_all(x, a, b) in re.to_re(s)
     {
@@ -5238,6 +5293,15 @@ bool seq_rewriter::reduce_eq_empty(expr* l, expr* r, expr_ref& result) {
         result = m_autil.mk_lt(s, zero());
         return true;
     }
+    // s^n = "" <=> n <= 0 or s = ""
+    expr* base = nullptr, *n = nullptr;
+    if (str().is_power(r, base, n)) {
+        expr_ref_vector fmls(m());
+        fmls.push_back(m_autil.mk_le(n, zero()));
+        fmls.push_back(m().mk_eq(base, l));
+        result = m().mk_or(fmls);
+        return true;
+    }
     // at(s, offset) = "" <=> len(s) <= offset or offset < 0
     if (str().is_at(r, s, offset)) {
         expr_ref len_s(str().mk_length(s), m());
@@ -5464,147 +5528,6 @@ void seq_rewriter::op_cache::cleanup() {
 }
 
 lbool seq_rewriter::some_string_in_re(expr* r, zstring& s) {
-    sort* rs;
-    (void)rs;
-    // SASSERT(u().is_re(r, rs) && m_util.is_string(rs));
-    expr_mark visited;
-    unsigned_vector str;
-
-    auto result = some_string_in_re(visited, r, str);
-    if (result == l_true)
-        s = zstring(str.size(), str.data());
-    return result;
-}
-
-struct re_eval_pos {
-    expr_ref e; // use reference to avoid gc
-    unsigned str_len;
-    buffer<std::pair<unsigned, unsigned>> exclude;
-    bool needs_derivation;
-};
-
-lbool seq_rewriter::some_string_in_re(expr_mark& visited, expr* r, unsigned_vector& str) {
-    SASSERT(str.empty());
-    vector<re_eval_pos> todo;
-    todo.push_back({ expr_ref(r, m()), 0, {}, true });
-    while (!todo.empty()) {
-        re_eval_pos current = todo.back();
-        todo.pop_back();
-        r = current.e;
-        str.resize(current.str_len);
-        if (current.needs_derivation) {
-            SASSERT(current.exclude.empty());
-            // We are looking for the next character => generate derivation
-            if (visited.is_marked(r))
-                continue;
-            if (re().is_empty(r))
-                continue;
-            auto info = re().get_info(r);
-            if (info.nullable == l_true)
-                return l_true;
-            visited.mark(r);
-            if (re().is_union(r)) {
-                for (expr* arg : *to_app(r)) {
-                    todo.push_back({ expr_ref(arg, m()), str.size(), {}, true });
-                }
-                continue;
-            }
-
-            r = mk_derivative(r);
-        }
-        // otw. we are still in the process of deciding case of the derivation to take
-
-        buffer<std::pair<unsigned, unsigned>> exclude = std::move(current.exclude);
-
-        expr* c, * th, * el;
-        if (re().is_empty(r))
-            continue;
-        if (re().is_union(r)) {
-            for (expr* arg : *to_app(r)) {
-                todo.push_back({ expr_ref(arg, m()), str.size(), exclude, false });
-            }
-            continue;
-        }
-        if (m().is_ite(r, c, th, el)) {
-            unsigned low = 0, high = zstring::unicode_max_char();
-            bool has_bounds = get_bounds(c, low, high);
-            if (!re().is_empty(el)) {
-                if (has_bounds)
-                    exclude.push_back({ low, high });
-                todo.push_back({ expr_ref(el, m()), str.size(), std::move(exclude), false });
-            }
-            if (has_bounds) {
-                // I want this case to be processed first => push it last
-                // reason: current string is only pruned
-                SASSERT(low <= high);
-                str.push_back(low);           // ASSERT: low .. high does not intersect with exclude
-                todo.push_back({ expr_ref(th, m()), str.size(), {}, true });
-            }
-            continue;
-        }
-
-        if (is_ground(r)) {
-            // ensure selected character is not in exclude
-            unsigned ch = 'a';
-            bool wrapped = false;
-            bool failed = false;
-            while (true) {
-                bool found = false;
-                for (auto [l, h] : exclude) {
-                    if (l <= ch && ch <= h) {
-                        found = true;
-                        ch = h + 1;
-                    }
-                }
-                if (!found)
-                    break;
-                if (ch != zstring::unicode_max_char() + 1)
-                    continue;
-                if (wrapped) {
-                    failed = true;
-                    break;
-                }
-                ch = 0;
-                wrapped = true;
-            }
-            if (failed)
-                continue;
-            str.push_back(ch);
-            todo.push_back({ expr_ref(r, m()), str.size(), {}, true });
-            continue;
-        }
-
-        return l_undef;
-    }
-    return l_false;
-}
-
-bool seq_rewriter::get_bounds(expr* e, unsigned& low, unsigned& high) {
-    low = 0; 
-    high = zstring::unicode_max_char();
-    ptr_buffer<expr> todo;
-    todo.push_back(e);
-    expr* x, * y;
-    unsigned ch = 0;
-    while (!todo.empty()) {
-        e = todo.back();
-        todo.pop_back();
-        if (m().is_and(e)) 
-            todo.append(to_app(e)->get_num_args(), to_app(e)->get_args());  
-        else if (m_util.is_char_le(e, x, y) && m_util.is_const_char(x, ch) && is_var(y))
-            low = std::max(ch, low);
-        else if (m_util.is_char_le(e, x, y) && m_util.is_const_char(y, ch) && is_var(x))
-            high = std::min(ch, high);
-        else if (m().is_eq(e, x, y) && is_var(x) && m_util.is_const_char(y, ch)) {
-            low = std::max(ch, low);
-            high = std::min(ch, high);
-        }
-        else if (m().is_eq(e, x, y) && is_var(y) && m_util.is_const_char(x, ch)) {
-            low = std::max(ch, low);
-            high = std::min(ch, high);
-        }
-        else
-            return false;
-    }
-    return low <= high;
+    seq::regex_witness rw(*this);
+    return rw.get_witness(r, s);
 }
