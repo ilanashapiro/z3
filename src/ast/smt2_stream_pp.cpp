@@ -60,6 +60,12 @@ void smt2_stream_pp::flatten(format_ns::format * f) {
     }
 }
 
+void smt2_stream_pp::fallback(ast * a) {
+    std::ostringstream oss;
+    oss << mk_ismt2_pp(a, m_manager, m_leaf_params);
+    m_out.append(oss.str());
+}
+
 void smt2_stream_pp::emit(expr * e) {
     if (!e) { write("null"); return; }
     switch (e->get_kind()) {
@@ -94,11 +100,8 @@ void smt2_stream_pp::emit(expr * e) {
         return;
     }
     default:
-        // AST_SORT / AST_FUNC_DECL shouldn't appear as unit literals. Fall
-        // back through mk_ismt2_pp for parity.
-        std::ostringstream oss;
-        oss << mk_ismt2_pp(e, m_manager, m_leaf_params);
-        m_out.append(oss.str());
+        // AST_SORT / AST_FUNC_DECL shouldn't appear as unit literals.
+        fallback(e);
         return;
     }
 }
@@ -118,10 +121,8 @@ void smt2_stream_pp::emit_var(var * v) {
 }
 
 void smt2_stream_pp::emit_quantifier(quantifier * q) {
-    // Quantifiers cannot appear as ground unit literals; on the rare path
-    // where a caller does hand one in, defer to mk_ismt2_pp for full
-    // fidelity (patterns, weights, qid, etc.). Kept correct, not fast.
-    std::ostringstream oss;
-    oss << mk_ismt2_pp(q, m_manager, m_leaf_params);
-    m_out.append(oss.str());
+    // On the rare path where a caller hands a top-level quantifier in,
+    // defer to mk_ismt2_pp for full fidelity (patterns, weights, qid, ...).
+    // Correct, not fast.
+    fallback(q);
 }

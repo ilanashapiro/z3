@@ -216,23 +216,27 @@ namespace api {
         return m_string_buffer.c_str();
     }
 
+    smt2_stream_pp & context::stream_pp() {
+        if (!m_stream_pp) m_stream_pp = alloc(smt2_stream_pp, m());
+        return *m_stream_pp;
+    }
+
+    expr_ref_vector & context::smt2_cache_pin() {
+        if (!m_smt2_cache_pin) m_smt2_cache_pin = alloc(expr_ref_vector, m());
+        return *m_smt2_cache_pin;
+    }
+
     const char * context::mk_ast_fast_string(expr * e) {
-        if (!m_stream_pp) {
-            m_stream_pp = alloc(smt2_stream_pp, m());
-        }
-        m_stream_pp->reset();
-        m_stream_pp->print(e);
-        m_string_buffer = m_stream_pp->take_buffer();
+        auto & pp = stream_pp();
+        pp.reset();
+        pp.print(e);
+        m_string_buffer = pp.take_buffer();
         return m_string_buffer.c_str();
     }
 
     const char * context::mk_units_smt2_string(expr_ref_vector const & fmls) {
-        if (!m_stream_pp) {
-            m_stream_pp = alloc(smt2_stream_pp, m());
-        }
-        if (!m_smt2_cache_pin) {
-            m_smt2_cache_pin = alloc(expr_ref_vector, m());
-        }
+        auto & pp = stream_pp();
+        auto & pin = smt2_cache_pin();
         m_string_buffer.clear();
         // Reserve a plausible amount up front to avoid rounds of reallocation
         // when concatenating many small cached strings.
@@ -240,10 +244,10 @@ namespace api {
         for (expr * f : fmls) {
             auto it = m_ast_smt2_cache.find_iterator(f);
             if (it == m_ast_smt2_cache.end()) {
-                m_stream_pp->reset();
-                m_stream_pp->print(f);
-                m_smt2_cache_pin->push_back(f);
-                m_ast_smt2_cache.insert(f, m_stream_pp->take_buffer());
+                pp.reset();
+                pp.print(f);
+                pin.push_back(f);
+                m_ast_smt2_cache.insert(f, pp.take_buffer());
                 it = m_ast_smt2_cache.find_iterator(f);
             }
             m_string_buffer.append(it->m_value);

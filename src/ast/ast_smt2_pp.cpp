@@ -396,7 +396,7 @@ format * smt2_pp_environment::pp_datalog_literal(app * t) {
     return mk_string(get_manager(), std::to_string(v));
 }
 
-format_ns::format * smt2_pp_environment::pp_leaf(app * c, params_ref const & params) {
+format * smt2_pp_environment::pp_leaf(app * c, params_ref const & params) {
     pp_params p(params);
     if (get_autil().is_numeral(c) || get_autil().is_irrational_algebraic_numeral(c))
         return pp_arith_literal(c, p.decimal(), p.decimal_precision());
@@ -410,13 +410,13 @@ format_ns::format * smt2_pp_environment::pp_leaf(app * c, params_ref const & par
         return pp_datalog_literal(c);
     buffer<symbol> names;
     if (get_manager().is_label_lit(c, names)) {
-        format_ns::format * f = format_ns::mk_string(get_manager(), "true");
+        format * f = mk_string(get_manager(), "true");
         for (symbol const & n : names) {
-            format_ns::format * attr = format_ns::mk_compose(get_manager(),
-                format_ns::mk_string(get_manager(), ":lblpos "),
-                format_ns::mk_string(get_manager(), ensure_quote(n)));
-            format_ns::format * buf[2] = { f, attr };
-            f = format_ns::mk_seq1<format_ns::format**, f2f>(get_manager(), buf, buf + 2, f2f(), "!");
+            format * attr = mk_compose(get_manager(),
+                mk_string(get_manager(), ":lblpos "),
+                mk_string(get_manager(), ensure_quote(n)));
+            format * buf[2] = { f, attr };
+            f = mk_seq1<format**, f2f>(get_manager(), buf, buf + 2, f2f(), "!");
         }
         return f;
     }

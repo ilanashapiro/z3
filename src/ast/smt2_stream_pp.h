@@ -32,11 +32,10 @@ class smt2_stream_pp {
     params_ref               m_leaf_params;   // consulted by pp_leaf
     std::string              m_out;
     svector<symbol>          m_var_names;
-    unsigned                 m_fresh_idx = 0;
 
-    void write(char c)              { m_out.push_back(c); }
-    void write(char const * s)      { m_out.append(s); }
-    void write(std::string const & s){ m_out.append(s); }
+    void write(char c)                { m_out.push_back(c); }
+    void write(char const * s)        { m_out.append(s); }
+    void write(std::string const & s) { m_out.append(s); }
 
     // Walk a format tree, appending to m_out. Single-line: line breaks
     // become a single space. Choices always take the flat branch. This is
@@ -44,13 +43,18 @@ class smt2_stream_pp {
     // trees ourselves -- only smt2_pp_environment's leaf outputs pass here.
     void flatten(format_ns::format * f);
 
+    // Uncommon-case escape hatch: defer to mk_ismt2_pp for fidelity on
+    // shapes the fast emitter doesn't handle inline (quantifiers, sort /
+    // func_decl ASTs). Single-line output guaranteed via m_leaf_params.
+    void fallback(ast * a);
+
     void emit(expr * e);
     void emit_var(var * v);
     void emit_quantifier(quantifier * q);
 
 public:
     smt2_stream_pp(ast_manager & m);
-    void reset() { m_out.clear(); m_var_names.reset(); m_fresh_idx = 0; }
+    void reset() { m_out.clear(); m_var_names.reset(); }
     std::string const & buffer() const { return m_out; }
     std::string && take_buffer() { return std::move(m_out); }
     void print(expr * e) { emit(e); }

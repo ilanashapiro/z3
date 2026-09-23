@@ -115,9 +115,12 @@ namespace api {
         // cached expr so its address / id can never be reused underneath us
         // even if the caller drops all their refs.
         // See mk_units_smt2_string / Z3_solver_get_units_smt2.
+        // Lazy-allocated on first fast-path use via stream_pp() / cache_pin().
         obj_map<expr, std::string> m_ast_smt2_cache;
         scoped_ptr<expr_ref_vector> m_smt2_cache_pin;
         scoped_ptr<smt2_stream_pp> m_stream_pp;
+        smt2_stream_pp &   stream_pp();
+        expr_ref_vector &  smt2_cache_pin();
 
         Z3_error_code              m_error_code;
         Z3_error_handler *         m_error_handler;
